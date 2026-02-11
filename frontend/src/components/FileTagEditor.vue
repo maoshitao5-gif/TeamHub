@@ -210,6 +210,10 @@ const handleSave = async () => {
   try {
     await updateFileTags(props.file.id, tags.value)
     ElMessage.success('标签更新成功')
+    
+    // 重新加载标签库，确保新创建的标签出现在标签库中
+    await loadAllTags()
+    
     emit('saved', {
       ...props.file,
       tags: [...tags.value]

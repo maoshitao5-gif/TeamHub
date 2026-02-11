@@ -222,6 +222,33 @@ export function getPreviewUrl(fileId) {
 }
 
 /**
+ * 在服务器所在机器的文件管理器中定位（选中）文件
+ * 注意：这是在后端服务器机器上执行，不是浏览器本机能力。
+ * @param {number} fileId - 文件ID
+ * @returns {Promise}
+ */
+export function revealFile(fileId) {
+  const fileIdNum = parseInt(fileId, 10)
+  if (isNaN(fileIdNum)) {
+    return Promise.reject(new Error('无效的文件ID'))
+  }
+  return request.post(`/files/${fileIdNum}/reveal`)
+}
+
+/**
+ * 在服务器所在机器上用默认程序打开文件
+ * @param {number} fileId - 文件ID
+ * @returns {Promise}
+ */
+export function openFile(fileId) {
+  const fileIdNum = parseInt(fileId, 10)
+  if (isNaN(fileIdNum)) {
+    return Promise.reject(new Error('无效的文件ID'))
+  }
+  return request.post(`/files/${fileIdNum}/open`)
+}
+
+/**
  * 删除文件（通过文件ID）
  * @param {number} fileId - 文件ID
  * @returns {Promise}

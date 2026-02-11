@@ -28,6 +28,14 @@ export function batchDeleteFiles(fileIds) {
   })
 }
 
+/**
+ * 核对存储：扫描 storage 目录，同步数据库记录
+ * @returns {Promise}
+ */
+export function syncStorage() {
+  return request.post('/admin/sync-storage')
+}
+
 // ==================== 标签管理 ====================
 
 /**

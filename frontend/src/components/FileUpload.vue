@@ -212,45 +212,6 @@
       </div>
     </el-card>
 
-    <!-- 删除原文件确认对话框 -->
-    <el-dialog
-      v-model="showDeleteSourceDialog"
-      title="是否删除原路径文件"
-      width="500px"
-    >
-      <div class="delete-source-info">
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          style="margin-bottom: 20px;"
-        >
-          <template #title>
-            <div style="font-size: 14px;">
-              文件已添加到上传队列
-            </div>
-          </template>
-        </el-alert>
-        
-        <div class="file-path-display">
-          <el-text type="primary" style="font-weight: 600;">文件路径：</el-text>
-          <el-text type="info" style="word-break: break-all; font-family: monospace; font-size: 12px;">
-            {{ sourceFilePath || '未知路径' }}
-          </el-text>
-        </div>
-        
-        <div style="margin-top: 16px;">
-          <el-text type="warning" size="small">
-            ⚠️ 注意：删除操作将在文件上传成功后执行。如果上传失败，原文件不会被删除。
-          </el-text>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="handleCancelDeleteSource">保留原文件</el-button>
-        <el-button type="danger" @click="handleConfirmDeleteSource">删除原文件</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 重复文件警告对话框 -->
     <el-dialog
       v-model="duplicateDialogVisible"
@@ -356,12 +317,6 @@ const compressing = ref(false) // 压缩中状态
 // 拖拽状态
 const isDragging = ref(false) // 是否正在拖拽
 const dragCounter = ref(0) // 拖拽计数器，用于处理嵌套元素
-
-// 删除原文件相关
-const showDeleteSourceDialog = ref(false) // 是否显示删除原文件对话框
-const sourceFileHandle = ref(null) // 存储文件句柄（用于File System Access API）
-const sourceFilePath = ref('') // 存储文件路径（用于显示）
-const pendingDeleteAfterUpload = ref(false) // 标记是否在上传成功后删除原文件
 
 // 计算是否可以上传
 const canUpload = computed(() => {
@@ -477,31 +432,6 @@ const handleFileChange = (uploadFile, uploadFiles) => {
   // 强制触发响应式更新
   fileList.value = [...fileList.value]
   
-  // 如果文件是通过点击选择（非拖拽），也需要显示删除对话框
-  // 检查是否是点击选择（没有文件句柄和路径信息）
-  if (fileList.value.length > 0 && uploadMode.value === 'single') {
-    const fileObj = fileList.value[0]
-    const file = fileObj.raw || fileObj
-    
-    // 如果文件对象中没有存储文件句柄信息，说明是通过点击选择的
-    if (file && !fileObj._fileHandle && !fileObj._fileEntry && !fileObj._filePath) {
-      // 尝试获取文件路径信息
-      let filePath = file.name
-      if (file.path) {
-        filePath = file.path
-      }
-      
-      // 存储文件信息
-      sourceFileHandle.value = null // 点击选择无法获取文件句柄
-      sourceFilePath.value = filePath
-      
-      // 延迟显示对话框，确保文件已添加到列表
-      setTimeout(() => {
-        showDeleteSourceDialog.value = true
-        console.log('通过点击选择文件，显示删除原文件对话框')
-      }, 100)
-    }
-  }
 }
 
 // 触发文件夹选择
@@ -698,33 +628,11 @@ const handleSingleFileDrop = async (event) => {
         size: file.size,
         raw: file,
         uid: Date.now(),
-        status: 'ready',
-        _fileHandle: fileHandle, // 存储文件句柄（File System Access API）
-        _fileEntry: fileEntry, // 存储文件条目（File System API）
-        _filePath: filePath // 存储文件路径
+        status: 'ready'
       }
       
       // 调用 handleFileChange 来确保 el-upload 组件正确更新
       handleFileChange(uploadFileObj, [uploadFileObj])
-      
-      // 总是显示删除原文件对话框（无论是否有文件句柄）
-      // 存储文件信息用于后续删除
-      sourceFileHandle.value = fileHandle || fileEntry // 存储文件句柄或条目
-      sourceFilePath.value = filePath
-      
-      console.log('文件信息:', {
-        name: file.name,
-        size: file.size,
-        hasFileHandle: !!fileHandle,
-        hasFileEntry: !!fileEntry,
-        filePath: filePath
-      })
-      
-      // 延迟显示对话框，确保文件已添加到列表
-      setTimeout(() => {
-        showDeleteSourceDialog.value = true
-        console.log('显示删除原文件对话框')
-      }, 100)
     }
   } else {
     ElMessage.warning('无法识别拖拽的内容，请重试')
@@ -1029,11 +937,6 @@ const handleSingleUpload = async () => {
     validating.value = false
     
     ElMessage.success('文件上传成功！')
-    
-    // 如果用户选择删除原文件，执行删除操作
-    if (pendingDeleteAfterUpload.value) {
-      await deleteSourceFile()
-    }
     
     emit('upload-success')
     
@@ -1368,11 +1271,6 @@ const handleFolderUpload = async () => {
     
     ElMessage.success(`文件夹上传成功！已压缩为 ${zipFileName}`)
     
-    // 如果用户选择删除原文件，执行删除操作
-    if (pendingDeleteAfterUpload.value) {
-      await deleteSourceFile()
-    }
-    
     emit('upload-success')
     
     // 延迟重置表单，让用户看到成功状态
@@ -1481,134 +1379,6 @@ const handleFolderUpload = async () => {
   }
 }
 
-// 处理取消删除原文件
-const handleCancelDeleteSource = () => {
-  showDeleteSourceDialog.value = false
-  sourceFileHandle.value = null
-  sourceFilePath.value = ''
-  pendingDeleteAfterUpload.value = false
-}
-
-// 处理确认删除原文件
-const handleConfirmDeleteSource = () => {
-  pendingDeleteAfterUpload.value = true
-  showDeleteSourceDialog.value = false
-  ElMessage.success('已标记：文件上传成功后将删除原文件')
-  console.log('用户选择删除原文件，已标记待删除:', sourceFilePath.value)
-}
-
-// 删除原路径文件
-const deleteSourceFile = async () => {
-  if (!pendingDeleteAfterUpload.value) {
-    return
-  }
-  
-  console.log('开始删除原文件:', {
-    hasHandle: !!sourceFileHandle.value,
-    filePath: sourceFilePath.value,
-    handleType: sourceFileHandle.value?.constructor?.name
-  })
-  
-  if (sourceFileHandle.value) {
-    try {
-      const handle = sourceFileHandle.value
-      
-      // 方法1: 尝试使用 File System Access API (FileSystemFileHandle)
-      if (handle.kind === 'file' && typeof handle.remove === 'function') {
-        try {
-          await handle.remove()
-          ElMessage.success('原文件已删除')
-          console.log('✅ 通过 File System Access API 删除成功:', sourceFilePath.value)
-          // 清理状态
-          sourceFileHandle.value = null
-          sourceFilePath.value = ''
-          pendingDeleteAfterUpload.value = false
-          return
-        } catch (error) {
-          console.warn('File System Access API 删除失败:', error)
-        }
-      }
-      
-      // 方法2: 尝试通过父目录删除 (File System Access API)
-      if (handle.kind === 'file' && typeof handle.getParent === 'function') {
-        try {
-          const parentHandle = await handle.getParent()
-          if (parentHandle && typeof parentHandle.removeEntry === 'function') {
-            await parentHandle.removeEntry(handle.name, { recursive: false })
-            ElMessage.success('原文件已删除')
-            console.log('✅ 通过父目录删除成功:', sourceFilePath.value)
-            // 清理状态
-            sourceFileHandle.value = null
-            sourceFilePath.value = ''
-            pendingDeleteAfterUpload.value = false
-            return
-          }
-        } catch (error) {
-          console.warn('通过父目录删除失败:', error)
-        }
-      }
-      
-      // 方法3: 尝试使用 File System API (FileEntry)
-      // 注意：FileEntry 的 remove 方法需要回调函数
-      if (handle.isFile) {
-        try {
-          // FileEntry.remove() 使用回调函数
-          await new Promise((resolve, reject) => {
-            if (typeof handle.remove === 'function') {
-              handle.remove(resolve, reject)
-            } else {
-              reject(new Error('FileEntry.remove 方法不存在'))
-            }
-          })
-          ElMessage.success('原文件已删除')
-          console.log('✅ 通过 File System API 删除成功:', sourceFilePath.value)
-          // 清理状态
-          sourceFileHandle.value = null
-          sourceFilePath.value = ''
-          pendingDeleteAfterUpload.value = false
-          return
-        } catch (error) {
-          console.warn('File System API 删除失败:', error)
-          // 继续尝试其他方法
-        }
-      }
-      
-      // 如果所有方法都失败，提示用户手动删除
-      console.warn('所有自动删除方法都失败，提示用户手动删除')
-      ElMessage.warning({
-        message: `无法自动删除原文件，请手动删除: ${sourceFilePath.value}`,
-        duration: 8000,
-        showClose: true
-      })
-      
-    } catch (error) {
-      console.error('删除原文件时发生错误:', error)
-      ElMessage.warning({
-        message: `删除原文件失败，请手动删除: ${sourceFilePath.value || '未知路径'}`,
-        duration: 8000,
-        showClose: true
-      })
-    } finally {
-      // 清理状态
-      sourceFileHandle.value = null
-      sourceFilePath.value = ''
-      pendingDeleteAfterUpload.value = false
-    }
-  } else {
-    // 没有文件句柄，提示用户手动删除
-    console.warn('没有文件句柄，提示用户手动删除')
-    if (sourceFilePath.value) {
-      ElMessage.info({
-        message: `文件上传成功！请手动删除原文件: ${sourceFilePath.value}`,
-        duration: 5000,
-        showClose: true
-      })
-    }
-    sourceFilePath.value = ''
-    pendingDeleteAfterUpload.value = false
-  }
-}
-
 // 关闭重复文件对话框
 const handleCloseDuplicateDialog = () => {
   duplicateDialogVisible.value = false
@@ -1667,10 +1437,6 @@ const handleReset = () => {
   uploading.value = false
   validating.value = false
   compressing.value = false
-  sourceFileHandle.value = null
-  sourceFilePath.value = ''
-  pendingDeleteAfterUpload.value = false
-  showDeleteSourceDialog.value = false
   if (uploadRef.value) {
     uploadRef.value.clearFiles()
   }
@@ -2083,19 +1849,4 @@ onMounted(() => {
   word-break: break-all;
 }
 
-.delete-source-info {
-  padding: 12px 0;
-}
-
-.file-path-display {
-  margin: 16px 0;
-  padding: 12px 16px;
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  word-break: break-all;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 12px;
-  color: #34495e;
-}
 </style>

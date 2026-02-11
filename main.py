@@ -9,6 +9,7 @@ import shutil
 import urllib.parse
 import time
 import random
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
@@ -1052,6 +1053,102 @@ async def preview_file(
     )
 
 
+@app.post("/files/{file_id}/reveal")
+async def reveal_file_in_explorer(
+    file_id: int = PathParam(..., description="文件ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # 需要登录
+):
+    """
+    在**服务器所在机器**的文件管理器中定位（选中）该文件。
+
+    说明：
+    - 浏览器无法直接“跳转到本地实体文件处”（安全限制）。
+    - 本接口通过后端在服务器机器上调用系统文件管理器完成定位。
+    - 若你的前后端都运行在同一台 Windows 电脑上，这通常就是你想要的效果。
+    """
+    file_record = db.query(File).filter(File.id == file_id).first()
+    if not file_record:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    storage_path_str = file_record.storage_path
+    file_path = Path(storage_path_str)
+
+    # 兼容：如果 storage_path 不是绝对路径，则按 storage 目录兜底解析
+    if not file_path.is_absolute() and not file_path.exists():
+        file_path = STORAGE_DIR / Path(storage_path_str).name
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
+
+    try:
+        if sys.platform == "win32":
+            # Windows：打开资源管理器并选中文件
+            # explorer /select,"C:\path\to\file"
+            subprocess.Popen(["explorer", "/select,", str(file_path)])
+        elif sys.platform == "darwin":
+            # macOS：Finder 中定位
+            subprocess.Popen(["open", "-R", str(file_path)])
+        else:
+            # Linux：尽量打开所在目录（不同桌面环境不一定支持选中）
+            subprocess.Popen(["xdg-open", str(file_path.parent)])
+
+        return {"success": True, "path": str(file_path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"定位文件失败: {safe_str(e)}")
+
+
+@app.post("/files/{file_id}/open")
+async def open_file_with_default_app(
+    file_id: int = PathParam(..., description="文件ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # 需要登录
+):
+    """
+    在**服务器所在机器**上使用系统默认程序直接打开文件。
+
+    说明：
+    - 浏览器无法直接“打开用户电脑的本地实体文件”（安全限制）。
+    - 本接口会在服务器机器上触发打开动作：Windows 使用默认关联程序打开。
+    """
+    file_record = db.query(File).filter(File.id == file_id).first()
+    if not file_record:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    storage_path_str = file_record.storage_path
+    file_path = Path(storage_path_str)
+
+    # 兼容：如果 storage_path 不是绝对路径，则按 storage 目录兜底解析
+    if not file_path.is_absolute() and not file_path.exists():
+        file_path = STORAGE_DIR / Path(storage_path_str).name
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
+
+    # 基础安全：只允许打开 storage 目录下文件
+    try:
+        storage_root = STORAGE_DIR.resolve()
+        resolved = file_path.resolve()
+        if resolved != storage_root and storage_root not in resolved.parents:
+            raise HTTPException(status_code=403, detail="禁止打开非存储目录下的文件")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"路径解析失败: {safe_str(e)}")
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(file_path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(file_path)])
+        else:
+            subprocess.Popen(["xdg-open", str(file_path)])
+
+        return {"success": True, "path": str(file_path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打开文件失败: {safe_str(e)}")
+
+
 @app.delete("/files/{file_id}")
 async def delete_file(
     file_id: int = PathParam(..., description="文件ID"),
@@ -1303,6 +1400,144 @@ async def admin_batch_delete_files(
     return {
         "message": f"成功删除 {deleted_count} 个文件",
         "deleted_count": deleted_count
+    }
+
+
+@app.post("/admin/sync-storage")
+async def admin_sync_storage(
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(get_admin_user)
+):
+    """
+    管理员核对存储：扫描 storage 目录，同步数据库记录
+    - 如果数据库有记录但文件不存在，删除数据库记录
+    - 如果文件存在但数据库没有记录，创建数据库记录
+    """
+    from backend.app.core.file_utils import calculate_sha256
+    from backend.app.core.encoding import safe_str, safe_print
+    
+    deleted_records = []  # 数据库有但文件不存在的记录
+    added_records = []    # 文件存在但数据库没有的记录
+    
+    # 1. 扫描 storage 目录下的所有文件（递归）
+    storage_files = {}  # {storage_path: file_path}
+    if STORAGE_DIR.exists():
+        for file_path in STORAGE_DIR.rglob('*'):
+            if file_path.is_file():
+                # 计算相对于 storage 目录的路径
+                try:
+                    relative_path = file_path.relative_to(STORAGE_DIR)
+                    storage_path_str = str(relative_path).replace('\\', '/')  # 统一使用 / 分隔符
+                    storage_files[storage_path_str] = file_path
+                except Exception as e:
+                    safe_print(f"[核对存储] 跳过文件（路径错误）: {file_path}, 错误: {safe_str(e)}")
+                    continue
+    
+    safe_print(f"[核对存储] 扫描到 {len(storage_files)} 个存储文件")
+    
+    # 2. 获取数据库中所有文件记录
+    db_files = db.query(File).all()
+    db_storage_paths = {file.storage_path: file for file in db_files}
+    
+    safe_print(f"[核对存储] 数据库中有 {len(db_files)} 条文件记录")
+    
+    # 3. 检查数据库记录：如果文件不存在，删除记录
+    for file_record in db_files:
+        storage_path_str = file_record.storage_path
+        # 尝试多种路径格式匹配
+        file_exists = False
+        
+        # 方式1: 直接匹配 storage_path
+        if storage_path_str in storage_files:
+            file_exists = True
+        else:
+            # 方式2: 尝试作为绝对路径
+            abs_path = Path(storage_path_str)
+            if abs_path.exists() and abs_path.is_file():
+                file_exists = True
+            else:
+                # 方式3: 尝试作为相对于 storage 的路径
+                relative_path = STORAGE_DIR / storage_path_str
+                if relative_path.exists() and relative_path.is_file():
+                    file_exists = True
+        
+        if not file_exists:
+            safe_print(f"[核对存储] 发现孤立记录（文件不存在）: ID={file_record.id}, storage_path={storage_path_str}")
+            deleted_records.append({
+                "id": file_record.id,
+                "original_filename": file_record.original_filename,
+                "storage_path": storage_path_str
+            })
+            # 删除数据库记录（关联的标签关系会自动删除）
+            db.delete(file_record)
+    
+    # 4. 检查存储文件：如果数据库没有记录，创建记录
+    for storage_path_str, file_path in storage_files.items():
+        # 检查数据库中是否已有此 storage_path 的记录
+        if storage_path_str not in db_storage_paths:
+            # 还需要检查是否有相同哈希值的记录（可能是路径不同但文件相同）
+            try:
+                # 计算文件哈希值
+                file_hash = calculate_sha256(str(file_path))
+                file_size = file_path.stat().st_size
+                
+                # 检查是否有相同哈希值的记录
+                existing_file = db.query(File).filter(File.sha256_hash == file_hash).first()
+                if existing_file:
+                    safe_print(f"[核对存储] 发现重复文件（相同哈希但路径不同）: storage_path={storage_path_str}, 已有记录ID={existing_file.id}")
+                    # 不创建新记录，但记录这个情况
+                    continue
+                
+                # 从文件名推断原始文件名（去掉哈希前缀）
+                filename = file_path.name
+                if '_' in filename and len(filename.split('_')[0]) == 8:
+                    # 可能是 {hash8}_{original_name} 格式
+                    original_filename = '_'.join(filename.split('_')[1:])
+                else:
+                    # 直接使用文件名
+                    original_filename = filename
+                
+                # 计算相对路径（如果有子目录）
+                relative_path_value = None
+                if file_path.parent != STORAGE_DIR:
+                    try:
+                        rel_path = file_path.parent.relative_to(STORAGE_DIR)
+                        relative_path_value = str(rel_path).replace('\\', '/')
+                    except:
+                        pass
+                
+                # 创建新的文件记录
+                new_file = File(
+                    original_filename=original_filename,
+                    storage_path=storage_path_str,
+                    sha256_hash=file_hash,
+                    file_size=file_size,
+                    upload_time=datetime.utcnow(),
+                    relative_path=relative_path_value
+                )
+                db.add(new_file)
+                db.flush()  # 获取 ID
+                
+                added_records.append({
+                    "id": new_file.id,
+                    "original_filename": original_filename,
+                    "storage_path": storage_path_str,
+                    "file_size": file_size
+                })
+                safe_print(f"[核对存储] 添加新记录: ID={new_file.id}, filename={original_filename}, storage_path={storage_path_str}")
+            except Exception as e:
+                safe_print(f"[核对存储] 处理文件失败: {file_path}, 错误: {safe_str(e)}")
+                continue
+    
+    # 提交所有更改
+    db.commit()
+    
+    return {
+        "message": "存储核对完成",
+        "deleted_count": len(deleted_records),
+        "added_count": len(added_records),
+        "deleted_records": deleted_records,
+        "added_records": added_records
     }
 
 

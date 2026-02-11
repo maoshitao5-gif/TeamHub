@@ -30,7 +30,7 @@
               <span 
                 class="file-name previewable"
                 @click="handleFileNameClick(row)"
-                :title="isPreviewable(row) ? '点击预览文件' : '点击查看文件详情'"
+                title="点击直接打开文件（服务器机器）"
               >
                 {{ row.original_filename }}
               </span>
@@ -50,9 +50,8 @@
               <el-tag
                 v-for="tag in row.tags"
                 :key="tag"
-                :color="getTagColor(tag)"
-                effect="plain"
-                class="file-tag"
+                size="small"
+                style="margin-right: 4px;"
               >
                 {{ tag }}
               </el-tag>
@@ -67,8 +66,25 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="isPreviewable(row)"
+              type="info"
+              link
+              @click="handlePreview(row)"
+              :icon="View"
+            >
+              预览
+            </el-button>
+            <el-button
+              type="info"
+              link
+              @click="handleReveal(row)"
+              :icon="FolderOpened"
+            >
+              定位
+            </el-button>
             <el-button
               type="primary"
               link
@@ -117,11 +133,11 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Download, Delete, PriceTag } from '@element-plus/icons-vue'
-import { formatFileSize, formatDateTime, getTagColor } from '@/utils/format'
+import { Document, Download, Delete, PriceTag, View, FolderOpened } from '@element-plus/icons-vue'
+import { formatFileSize, formatDateTime } from '@/utils/format'
 import FilePreview from './FilePreview.vue'
 import FileTagEditor from './FileTagEditor.vue'
-import { downloadFile, deleteFile } from '@/api/file'
+import { downloadFile, deleteFile, revealFile, openFile } from '@/api/file'
 
 const props = defineProps({
   files: {
@@ -162,10 +178,37 @@ const isPreviewable = (file) => {
   return imageExts.some(ext => filename.endsWith(ext)) || filename.endsWith(pdfExt)
 }
 
-// 处理文件名点击 - 统一打开预览对话框
-const handleFileNameClick = (row) => {
-  // 所有文件都打开预览对话框
-  // 对于不支持预览的文件类型，预览对话框会显示提示并提供下载按钮
+// 处理文件名点击 - 在服务器机器上直接打开文件
+const handleFileNameClick = async (row) => {
+  try {
+    await openFile(row.id)
+    ElMessage.success('已打开文件（服务器机器）')
+  } catch (error) {
+    console.error('打开文件失败:', error)
+    // 回退策略：可预览则预览，否则下载
+    if (isPreviewable(row)) {
+      handlePreview(row)
+      ElMessage.info('已回退到预览')
+    } else {
+      ElMessage.warning('无法自动打开文件（可能不是本机部署或系统限制），已回退到下载')
+      await handleDownload(row)
+    }
+  }
+}
+
+// 定位文件（可选操作）
+const handleReveal = async (row) => {
+  try {
+    await revealFile(row.id)
+    ElMessage.success('已在文件管理器中定位文件（服务器机器）')
+  } catch (error) {
+    console.error('定位文件失败:', error)
+    ElMessage.warning('无法定位文件（可能不是本机部署或系统限制）')
+  }
+}
+
+// 预览文件（通过操作栏按钮）
+const handlePreview = (row) => {
   previewFile.value = row
   previewVisible.value = true
 }
@@ -315,14 +358,6 @@ defineExpose({
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-}
-
-.file-tag {
-  margin: 0;
-  border: none;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 4px;
 }
 
 .no-tags {

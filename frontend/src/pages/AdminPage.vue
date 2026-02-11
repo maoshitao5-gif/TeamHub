@@ -13,6 +13,10 @@
         <el-tab-pane label="文件管理" name="files">
           <div class="tab-content">
             <div class="toolbar">
+              <el-button type="primary" @click="handleSyncStorage" :loading="syncLoading">
+                <el-icon><Refresh /></el-icon>
+                核对存储
+              </el-button>
               <el-button type="danger" :disabled="selectedFiles.length === 0" @click="handleBatchDeleteFiles">
                 <el-icon><Delete /></el-icon>
                 批量删除 ({{ selectedFiles.length }})
@@ -304,10 +308,11 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting, Delete, Plus } from '@element-plus/icons-vue'
+import { Setting, Delete, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   getAdminFiles,
   batchDeleteFiles,
+  syncStorage,
   getAdminTags,
   createTag,
   updateTag,
@@ -331,6 +336,7 @@ const filePage = ref(1)
 const filePageSize = ref(50)
 const fileTotal = ref(0)
 const selectedFiles = ref([])
+const syncLoading = ref(false)
 
 // ==================== 标签管理 ====================
 const tagList = ref([])
@@ -426,6 +432,39 @@ async function handleBatchDeleteFiles() {
     if (error !== 'cancel') {
       ElMessage.error('批量删除失败：' + (error.message || '未知错误'))
     }
+  }
+}
+
+async function handleSyncStorage() {
+  try {
+    await ElMessageBox.confirm(
+      '确定要核对存储吗？系统将扫描 storage 目录，同步数据库记录。\n\n' +
+      '- 如果数据库有记录但文件不存在，将删除数据库记录\n' +
+      '- 如果文件存在但数据库没有记录，将创建数据库记录',
+      '确认核对存储',
+      { type: 'info' }
+    )
+    
+    syncLoading.value = true
+    const res = await syncStorage()
+    
+    let message = `核对完成！\n`
+    message += `- 删除了 ${res.deleted_count} 条孤立记录\n`
+    message += `- 添加了 ${res.added_count} 条新记录`
+    
+    if (res.deleted_count > 0 || res.added_count > 0) {
+      ElMessage.success(message)
+      // 刷新文件列表
+      loadFiles()
+    } else {
+      ElMessage.info('存储已同步，无需更新')
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('核对存储失败：' + (error.message || '未知错误'))
+    }
+  } finally {
+    syncLoading.value = false
   }
 }
 
