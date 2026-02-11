@@ -124,3 +124,26 @@ export function updateUser(userId, data) {
 export function deleteUser(userId) {
   return request.delete(`/admin/users/${userId}`)
 }
+
+/**
+ * 重置用户密码
+ * @param {number} userId - 用户ID
+ * @param {string} password - 新密码
+ * @returns {Promise}
+ */
+export function resetUserPassword(userId, password) {
+  return request.post(`/admin/users/${userId}/reset-password`, {
+    password
+  })
+}
+
+/**
+ * 批量创建用户
+ * @param {Array<{username: string, password: string, is_admin: boolean}>} users - 用户列表
+ * @returns {Promise}
+ */
+export function batchCreateUsers(users) {
+  return request.post('/admin/users/batch-create', {
+    users
+  })
+}

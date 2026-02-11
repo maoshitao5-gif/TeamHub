@@ -265,21 +265,22 @@ onMounted(() => {
 .file-info {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px;
-  background: #f5f7fa;
+  gap: 10px;
+  padding: 14px 16px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 6px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .file-icon {
-  color: #409EFF;
+  color: #1e88e5;
   font-size: 20px;
 }
 
 .file-name {
   font-weight: 500;
-  color: #303133;
+  color: #2c3e50;
   font-size: 14px;
 }
 
@@ -290,15 +291,32 @@ onMounted(() => {
 .tag-input-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
   font-size: 14px;
   font-weight: 500;
-  color: #606266;
+  color: #34495e;
+}
+
+.tag-input-label .el-icon {
+  color: #2c3e50;
 }
 
 .tag-autocomplete {
   width: 100%;
+}
+
+.tag-autocomplete :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px #e4e7ed inset;
+  border-radius: 6px;
+}
+
+.tag-autocomplete :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #c0c4cc inset;
+}
+
+.tag-autocomplete :deep(.el-input.is-focus .el-input__wrapper) {
+  box-shadow: 0 0 0 1px #1e88e5 inset;
 }
 
 .tag-suggestion-item {
@@ -310,12 +328,12 @@ onMounted(() => {
 
 .tag-name {
   font-weight: 500;
-  color: #303133;
+  color: #2c3e50;
 }
 
 .tag-count {
   font-size: 12px;
-  color: #909399;
+  color: #7f8c8d;
 }
 
 .current-tags-section {
@@ -325,28 +343,80 @@ onMounted(() => {
 .current-tags-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
   font-size: 14px;
   font-weight: 500;
-  color: #606266;
+  color: #34495e;
+}
+
+.current-tags-label .el-icon {
+  color: #2c3e50;
 }
 
 .tags-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   min-height: 40px;
   align-items: flex-start;
+  padding: 12px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
 }
 
 .current-tag {
   font-size: 13px;
-  padding: 4px 10px;
-  transition: all 0.3s;
+  padding: 6px 12px;
+  transition: all 0.2s ease;
+  border-radius: 4px;
 }
 
 .current-tag:hover {
-  transform: scale(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* 对话框样式优化 */
+:deep(.el-dialog) {
+  border-radius: 8px;
+}
+
+:deep(.el-dialog__header) {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+:deep(.el-dialog__title) {
+  color: #2c3e50;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+:deep(.el-dialog__body) {
+  padding: 20px;
+}
+
+:deep(.el-dialog__footer) {
+  padding: 16px 20px;
+  border-top: 1px solid #e4e7ed;
+}
+
+:deep(.el-dialog__footer .el-button) {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+:deep(.el-dialog__footer .el-button--primary) {
+  background: #2c3e50;
+  border-color: #2c3e50;
+}
+
+:deep(.el-dialog__footer .el-button--primary:hover) {
+  background: #34495e;
+  border-color: #34495e;
 }
 </style>

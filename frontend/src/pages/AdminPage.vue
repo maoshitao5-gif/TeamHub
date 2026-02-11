@@ -135,6 +135,10 @@
                 <el-icon><Plus /></el-icon>
                 创建用户
               </el-button>
+              <el-button type="success" @click="showBatchCreateUserDialog = true">
+                <el-icon><Plus /></el-icon>
+                批量创建
+              </el-button>
             </div>
             <el-table
               :data="userList"
@@ -151,7 +155,7 @@
               </el-table-column>
               <el-table-column prop="created_at" label="创建时间" width="180" />
               <el-table-column prop="last_login" label="最后登录" width="180" />
-              <el-table-column label="操作" width="250" fixed="right">
+              <el-table-column label="操作" width="320" fixed="right">
                 <template #default="{ row }">
                   <el-button
                     type="primary"
@@ -159,6 +163,13 @@
                     @click="handleEditUser(row)"
                   >
                     编辑
+                  </el-button>
+                  <el-button
+                    type="warning"
+                    size="small"
+                    @click="handleResetPassword(row)"
+                  >
+                    重置密码
                   </el-button>
                   <el-button
                     type="danger"
@@ -236,6 +247,57 @@
         <el-button type="primary" @click="handleUpdateUser">确定</el-button>
       </template>
     </el-dialog>
+
+    <!-- 重置密码对话框 -->
+    <el-dialog v-model="showResetPasswordDialog" title="重置密码" width="400px">
+      <el-form :model="resetPasswordForm" label-width="80px">
+        <el-form-item label="用户名">
+          <el-input v-model="resetPasswordForm.username" disabled />
+        </el-form-item>
+        <el-form-item label="新密码" required>
+          <el-input
+            v-model="resetPasswordForm.password"
+            type="password"
+            placeholder="请输入新密码（至少6位）"
+            show-password
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showResetPasswordDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleResetPasswordConfirm">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量创建用户对话框 -->
+    <el-dialog v-model="showBatchCreateUserDialog" title="批量创建用户" width="600px">
+      <el-alert
+        type="info"
+        :closable="false"
+        style="margin-bottom: 16px;"
+      >
+        <template #default>
+          <div>格式：每行一个用户，格式为：用户名,密码,是否管理员(0/1)</div>
+          <div style="margin-top: 8px;">示例：</div>
+          <div>user1,password123,0</div>
+          <div>user2,password456,1</div>
+        </template>
+      </el-alert>
+      <el-form label-width="80px">
+        <el-form-item label="用户列表">
+          <el-input
+            v-model="batchCreateUsersText"
+            type="textarea"
+            :rows="10"
+            placeholder="请输入用户列表，每行一个用户"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showBatchCreateUserDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleBatchCreateUsers">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -254,7 +316,9 @@ import {
   getAdminUsers,
   createUser,
   updateUser,
-  deleteUser
+  deleteUser,
+  resetUserPassword,
+  batchCreateUsers
 } from '../api/admin'
 
 // 当前激活的标签页
@@ -281,6 +345,8 @@ const userLoading = ref(false)
 const showCreateTagDialog = ref(false)
 const showCreateUserDialog = ref(false)
 const showEditUserDialog = ref(false)
+const showResetPasswordDialog = ref(false)
+const showBatchCreateUserDialog = ref(false)
 
 const createTagForm = ref({ name: '' })
 const createUserForm = ref({
@@ -294,6 +360,12 @@ const editUserForm = ref({
   password: '',
   is_admin: false
 })
+const resetPasswordForm = ref({
+  id: null,
+  username: '',
+  password: ''
+})
+const batchCreateUsersText = ref('')
 
 // ==================== 工具函数 ====================
 function formatFileSize(bytes) {
@@ -551,6 +623,100 @@ async function handleDeleteUser(userId) {
   }
 }
 
+function handleResetPassword(row) {
+  resetPasswordForm.value = {
+    id: row.id,
+    username: row.username,
+    password: ''
+  }
+  showResetPasswordDialog.value = true
+}
+
+async function handleResetPasswordConfirm() {
+  if (!resetPasswordForm.value.password || resetPasswordForm.value.password.length < 6) {
+    ElMessage.warning('密码长度至少6位')
+    return
+  }
+  
+  try {
+    await resetUserPassword(resetPasswordForm.value.id, resetPasswordForm.value.password)
+    ElMessage.success('密码重置成功')
+    showResetPasswordDialog.value = false
+    resetPasswordForm.value = {
+      id: null,
+      username: '',
+      password: ''
+    }
+  } catch (error) {
+    ElMessage.error('重置失败：' + (error.message || '未知错误'))
+  }
+}
+
+async function handleBatchCreateUsers() {
+  if (!batchCreateUsersText.value || !batchCreateUsersText.value.trim()) {
+    ElMessage.warning('请输入用户列表')
+    return
+  }
+  
+  try {
+    // 解析用户列表
+    const lines = batchCreateUsersText.value.trim().split('\n')
+    const users = []
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim()
+      if (!line) continue
+      
+      const parts = line.split(',')
+      if (parts.length < 2) {
+        ElMessage.warning(`第 ${i + 1} 行格式错误：${line}`)
+        return
+      }
+      
+      const username = parts[0].trim()
+      const password = parts[1].trim()
+      const isAdmin = parts.length >= 3 && parts[2].trim() === '1'
+      
+      if (!username || !password) {
+        ElMessage.warning(`第 ${i + 1} 行用户名或密码不能为空`)
+        return
+      }
+      
+      if (password.length < 6) {
+        ElMessage.warning(`第 ${i + 1} 行密码长度至少6位`)
+        return
+      }
+      
+      users.push({
+        username,
+        password,
+        is_admin: isAdmin
+      })
+    }
+    
+    if (users.length === 0) {
+      ElMessage.warning('没有有效的用户数据')
+      return
+    }
+    
+    const result = await batchCreateUsers(users)
+    ElMessage.success(result.message || `成功创建 ${result.created_count} 个用户`)
+    
+    if (result.failed_count > 0 && result.failed_users) {
+      const failedInfo = result.failed_users.map(u => `${u.username}: ${u.error}`).join('\n')
+      ElMessageBox.alert(failedInfo, '部分用户创建失败', {
+        type: 'warning'
+      })
+    }
+    
+    showBatchCreateUserDialog.value = false
+    batchCreateUsersText.value = ''
+    loadUsers()
+  } catch (error) {
+    ElMessage.error('批量创建失败：' + (error.message || '未知错误'))
+  }
+}
+
 // ==================== 标签页切换 ====================
 function handleTabChange(tabName) {
   if (tabName === 'files') {
@@ -574,35 +740,173 @@ onMounted(() => {
 }
 
 .admin-card {
-  background: white;
+  background: #ffffff;
   border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.admin-card :deep(.el-card__header) {
+  background: #ffffff;
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+}
+
+.admin-card :deep(.el-card__body) {
+  padding: 20px;
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 18px;
   font-weight: 600;
+  color: #2c3e50;
 }
 
 .header-icon {
   font-size: 20px;
+  color: #2c3e50;
 }
 
 .tab-content {
-  padding: 16px 0;
+  padding: 0;
 }
 
 .toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 
-.toolbar .el-button {
-  margin-right: 8px;
+.toolbar :deep(.el-button) {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.toolbar :deep(.el-button--primary) {
+  background: #1e88e5;
+  border-color: #1e88e5;
+}
+
+.toolbar :deep(.el-button--primary:hover) {
+  background: #1565c0;
+  border-color: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(30, 136, 229, 0.2);
+}
+
+.toolbar :deep(.el-button--danger) {
+  background: #c62828;
+  border-color: #c62828;
+}
+
+.toolbar :deep(.el-button--danger:hover) {
+  background: #b71c1c;
+  border-color: #b71c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.2);
+}
+
+.toolbar :deep(.el-button:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar :deep(.el-button:disabled:hover) {
+  transform: none;
+  box-shadow: none;
+}
+
+/* 表格样式优化 */
+:deep(.el-table) {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+:deep(.el-table th) {
+  background: #f8f9fa;
+  color: #2c3e50;
+  font-weight: 600;
+  border-bottom: 2px solid #e4e7ed;
+}
+
+:deep(.el-table td) {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
+  background: #fafbfc;
+}
+
+:deep(.el-table .el-button) {
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:deep(.el-table .el-button--danger) {
+  color: #c62828;
+}
+
+:deep(.el-table .el-button--danger:hover) {
+  color: #b71c1c;
+}
+
+/* 标签页样式优化 */
+:deep(.el-tabs__header) {
+  margin-bottom: 20px;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+:deep(.el-tabs__item) {
+  color: #7f8c8d;
+  font-weight: 500;
+  padding: 0 24px;
+  transition: color 0.2s ease;
+}
+
+:deep(.el-tabs__item:hover) {
+  color: #2c3e50;
+}
+
+:deep(.el-tabs__item.is-active) {
+  color: #1e88e5;
+  font-weight: 600;
+}
+
+:deep(.el-tabs__active-bar) {
+  background-color: #1e88e5;
+}
+
+/* 分页样式优化 */
+:deep(.el-pagination) {
+  margin-top: 20px;
+}
+
+:deep(.el-pagination .el-pager li) {
+  color: #34495e;
+  font-weight: 500;
+}
+
+:deep(.el-pagination .el-pager li.is-active) {
+  background: #1e88e5;
+  color: #ffffff;
+}
+
+:deep(.el-pagination .btn-prev),
+:deep(.el-pagination .btn-next) {
+  color: #34495e;
+}
+
+:deep(.el-pagination .btn-prev:hover),
+:deep(.el-pagination .btn-next:hover) {
+  color: #1e88e5;
 }
 </style>

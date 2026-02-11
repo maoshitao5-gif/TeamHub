@@ -1,10 +1,10 @@
 """
 FastAPI 应用主入口
 提供文件上传、标签管理和文件搜索等核心功能
-模块化重构版本
 """
 import os
 import sys
+import hashlib
 import shutil
 import urllib.parse
 import time
@@ -15,9 +15,34 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 
 # ========== 全局 UTF-8 编码配置 ==========
-# 使用模块化的编码配置
-from backend.app.core.encoding import setup_utf8_encoding, safe_str, safe_print
-setup_utf8_encoding()
+# 强制设置标准输出、标准错误和标准输入使用 UTF-8 编码
+# 这对于 Windows 系统特别重要，因为默认编码可能是 GBK
+if sys.platform == 'win32':
+    # Windows 系统：设置控制台编码为 UTF-8
+    try:
+        # 设置环境变量
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        # 尝试设置控制台编码（如果支持）
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stdin, 'reconfigure'):
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        # 如果设置失败，继续执行（某些环境可能不支持）
+        pass
+
+# 设置默认编码为 UTF-8（Python 3.7+）
+import locale
+try:
+    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+    except locale.Error:
+        # 如果都失败，使用系统默认
+        pass
 # ========== 全局 UTF-8 编码配置结束 ==========
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, Path as PathParam, Request, Header
@@ -29,33 +54,142 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 import zipfile
 import io
 import traceback
 
-# 使用模块化的数据库和模型
-from backend.app.database import get_db, init_db
-from backend.app.models import File, Tag, file_tag_association, User
+from database import get_db, init_db
+from models import File, Tag, file_tag_association, User
 
-# 使用模块化的配置和安全模块
-from backend.app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, STORAGE_DIR
-from backend.app.core.security import (
-    verify_password, get_password_hash, create_access_token, verify_token
+# JWT 配置
+SECRET_KEY = "your-secret-key-change-this-in-production-please-use-env-variable"  # 生产环境应使用环境变量
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60  # 30天过期
+
+# 密码加密上下文
+# 使用bcrypt算法，设置rounds参数以兼容不同版本的bcrypt
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=12  # 明确指定rounds参数
 )
-from backend.app.core.file_utils import calculate_sha256, calculate_folder_content_hash
-from backend.app.services.tag_service import get_or_create_tag
 
 # HTTP Bearer Token 安全方案
 security = HTTPBearer()
 
 
-# 使用模块化的API模型和依赖
-from backend.app.api.schemas import (
-    SearchRequest, LoginRequest, Token, CreateUserRequest, UpdateUserRequest,
-    CreateTagRequest, UpdateTagRequest, BatchDeleteRequest, BatchDownloadRequest,
-    UpdateFileTagsRequest, BatchUpdateTagsRequest, ResetPasswordRequest, BatchCreateUserRequest
-)
-from backend.app.api.deps import get_current_user, get_admin_user
+class SearchRequest(BaseModel):
+    """
+    搜索请求模型
+    用于定义搜索接口的请求体结构
+    """
+    keywords: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+
+class LoginRequest(BaseModel):
+    """
+    登录请求模型
+    """
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    """
+    Token 响应模型
+    """
+    access_token: str
+    token_type: str
+    username: str
+
+
+# 密码验证和加密函数
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """验证密码"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    """生成密码哈希"""
+    # bcrypt限制密码长度不能超过72字节，需要截断
+    if len(password.encode('utf-8')) > 72:
+        password = password[:72]
+    return pwd_context.hash(password)
+
+
+# JWT Token 生成和验证
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """创建访问令牌"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+def verify_token(token: str) -> Optional[dict]:
+    """验证令牌"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+
+# 认证依赖
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    获取当前登录用户
+    从请求头中提取 token 并验证
+    """
+    token = credentials.credentials
+    payload = verify_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=401,
+            detail="无效的认证令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    username: str = payload.get("sub")
+    if username is None:
+        raise HTTPException(
+            status_code=401,
+            detail="无效的认证令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="用户不存在",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+# 管理员权限检查依赖
+async def get_admin_user(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    检查当前用户是否为超级管理员
+    只有超级管理员才能访问管理后台
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="权限不足，需要超级管理员权限"
+        )
+    return current_user
 
 
 @asynccontextmanager
@@ -69,22 +203,21 @@ async def lifespan(app: FastAPI):
     print("数据库初始化完成")
     
     # 初始化默认管理员用户（如果不存在）
-    from backend.app.config import DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
     db = next(get_db())
     try:
-        default_user = db.query(User).filter(User.username == DEFAULT_ADMIN_USERNAME).first()
+        default_user = db.query(User).filter(User.username == "admin").first()
         if not default_user:
-            # 创建默认超级管理员用户
-            default_password_hash = get_password_hash(DEFAULT_ADMIN_PASSWORD)
+            # 创建默认超级管理员用户，密码为 admin123
+            default_password_hash = get_password_hash("admin123")
             default_user = User(
-                username=DEFAULT_ADMIN_USERNAME,
+                username="admin",
                 hashed_password=default_password_hash,
                 created_at=datetime.utcnow(),
-                is_admin=True
+                is_admin=True  # 设置为超级管理员
             )
             db.add(default_user)
             db.commit()
-            safe_print(f"[OK] 已创建默认超级管理员用户: {DEFAULT_ADMIN_USERNAME} / {DEFAULT_ADMIN_PASSWORD}")
+            safe_print("[OK] 已创建默认超级管理员用户: admin / admin123")
         else:
             # 如果admin用户已存在但is_admin为False，更新为True
             if not default_user.is_admin:
@@ -111,18 +244,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 使用模块化的中间件和异常处理
-from backend.app.middleware.encoding import UTF8EncodingMiddleware
-from backend.app.middleware.exception import (
-    http_exception_handler,
-    validation_exception_handler,
-    general_exception_handler
-)
+# 添加全局中间件，确保所有响应都使用 UTF-8 编码
+@app.middleware("http")
+async def add_utf8_header(request: Request, call_next):
+    """确保所有响应都包含 UTF-8 编码头"""
+    response = await call_next(request)
+    # 确保 Content-Type 包含 charset=utf-8（对于文本响应）
+    if "content-type" in response.headers:
+        content_type = response.headers["content-type"]
+        if "application/json" in content_type and "charset" not in content_type:
+            response.headers["content-type"] = content_type.replace(
+                "application/json", "application/json; charset=utf-8"
+            )
+        elif "text/" in content_type and "charset" not in content_type:
+            response.headers["content-type"] = content_type + "; charset=utf-8"
+    return response
 
-# 添加编码中间件
-app.add_middleware(UTF8EncodingMiddleware)
-
-# 配置 CORS
+# 配置 CORS，允许前端跨域访问
+# 开发环境：允许所有 localhost 和 127.0.0.1 的端口
+# 生产环境应限制具体域名
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
@@ -132,19 +272,132 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# 注册异常处理器
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, general_exception_handler)
+# 全局异常处理器，确保所有错误响应都包含 CORS 头
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """处理 HTTP 异常，确保包含 CORS 头"""
+    # 获取允许的 origin
+    origin = request.headers.get("origin")
+    allowed_origins = [
+        "http://localhost:5173", 
+        "http://localhost:3000", 
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ]
+    
+    # 对于开发环境，允许所有 localhost 和 127.0.0.1 的请求
+    if origin and (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
+        cors_origin = origin
+    elif origin and origin in allowed_origins:
+        cors_origin = origin
+    else:
+        cors_origin = allowed_origins[0] if allowed_origins else "http://localhost:5173"
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers={
+            "Access-Control-Allow-Origin": cors_origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
-# 文件存储目录已在config模块中定义
-# STORAGE_DIR 已从 backend.app.config 导入
-# 确保目录存在
-STORAGE_DIR.mkdir(exist_ok=True)
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """处理请求验证错误，确保包含 CORS 头"""
+    # 获取允许的 origin
+    origin = request.headers.get("origin")
+    allowed_origins = [
+        "http://localhost:5173", 
+        "http://localhost:3000", 
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ]
+    
+    # 对于开发环境，允许所有 localhost 和 127.0.0.1 的请求
+    if origin and (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
+        cors_origin = origin
+    elif origin and origin in allowed_origins:
+        cors_origin = origin
+    else:
+        cors_origin = allowed_origins[0] if allowed_origins else "http://localhost:5173"
+    
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+        headers={
+            "Access-Control-Allow-Origin": cors_origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """处理所有未捕获的异常，确保包含 CORS 头"""
+    import traceback
+    error_detail = safe_str(exc)
+    error_traceback = traceback.format_exc()
+    safe_print(f"未捕获的异常: {error_detail}")
+    safe_print(f"错误堆栈: {error_traceback}")
+    
+    # 获取允许的 origin
+    origin = request.headers.get("origin")
+    allowed_origins = [
+        "http://localhost:5173", 
+        "http://localhost:3000", 
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ]
+    
+    # 对于开发环境，允许所有 localhost 和 127.0.0.1 的请求
+    if origin and (origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
+        cors_origin = origin
+    elif origin and origin in allowed_origins:
+        cors_origin = origin
+    else:
+        cors_origin = allowed_origins[0] if allowed_origins else "http://localhost:5173"
+    
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"服务器内部错误: {error_detail}"},
+        headers={
+            "Access-Control-Allow-Origin": cors_origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+# 文件存储目录
+STORAGE_DIR = Path("storage")
+STORAGE_DIR.mkdir(exist_ok=True)  # 如果目录不存在则创建
 
 
-# 以下工具函数已迁移到模块化结构中，保留作为向后兼容
-# 实际使用时会优先使用模块化版本（已在文件开头导入）
 def safe_str(obj) -> str:
     """
     安全地将对象转换为字符串，处理 Unicode 编码错误
@@ -201,25 +454,110 @@ def safe_print(*args, **kwargs):
                 pass  # 如果连这个都失败，就静默失败
 
 
-# 以下函数已迁移到模块化结构中，保留作为向后兼容
 def calculate_sha256(file_path: str) -> str:
-    """向后兼容函数，实际调用模块化版本"""
-    from backend.app.core.file_utils import calculate_sha256 as _calculate_sha256
-    return _calculate_sha256(file_path)
+    """
+    计算文件的 SHA-256 哈希值
+    
+    Args:
+        file_path: 文件路径
+        
+    Returns:
+        文件的 SHA-256 哈希值（十六进制字符串）
+    """
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        # 分块读取文件，避免大文件占用过多内存
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
 def calculate_folder_content_hash(zip_path: str) -> str:
-    """向后兼容函数，实际调用模块化版本"""
-    from backend.app.core.file_utils import calculate_folder_content_hash as _calculate_folder_content_hash
-    return _calculate_folder_content_hash(zip_path)
+    """
+    计算文件夹压缩包的内容哈希值（基于文件夹内所有文件的内容）
+    忽略文件夹名称和ZIP结构，只关注文件内容
+    
+    Args:
+        zip_path: ZIP 文件路径
+        
+    Returns:
+        文件夹内容的组合哈希值（十六进制字符串）
+    """
+    import tempfile
+    
+    # 创建临时目录用于解压
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        
+        print(f"[内容查重] 解压 ZIP 文件到临时目录: {temp_dir_path}")
+        
+        # 解压 ZIP 文件
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir_path)
+        
+        # 收集所有文件（排除文件夹）
+        file_hashes = []
+        
+        # 递归遍历解压后的目录
+        for root, dirs, files in os.walk(temp_dir_path):
+            for file_name in files:
+                file_path = Path(root) / file_name
+                # 计算每个文件内容的哈希值
+                file_hash = calculate_sha256(str(file_path))
+                file_hashes.append(file_hash)
+                safe_print(f"[内容查重] 文件: {file_path.relative_to(temp_dir_path)} -> 哈希: {file_hash[:16]}...")
+        
+        if not file_hashes:
+            raise ValueError("ZIP 文件中没有文件")
+        
+        # 对文件哈希值进行排序，确保顺序一致（忽略文件路径）
+        file_hashes.sort()
+        
+        print(f"[内容查重] 共找到 {len(file_hashes)} 个文件")
+        print(f"[内容查重] 文件哈希值列表（已排序）:")
+        for i, fh in enumerate(file_hashes[:10]):  # 只显示前10个
+            print(f"  [{i+1}] {fh[:16]}...")
+        if len(file_hashes) > 10:
+            print(f"  ... 还有 {len(file_hashes) - 10} 个文件")
+        
+        # 组合所有文件哈希值，计算最终的组合哈希值
+        combined_hash = hashlib.sha256()
+        for file_hash in file_hashes:
+            combined_hash.update(file_hash.encode('utf-8'))
+        
+        content_hash = combined_hash.hexdigest()
+        print(f"[内容查重] 文件夹内容组合哈希值: {content_hash}")
+        print(f"[内容查重] 组合哈希值前16位: {content_hash[:16]}...")
+        
+        return content_hash
 
 
-# get_or_create_tag 已迁移到 backend.app.services.tag_service
-# 已在文件开头导入，这里保留作为向后兼容
 def get_or_create_tag(db: Session, tag_name: str) -> Tag:
-    """向后兼容函数，实际调用模块化版本"""
-    from backend.app.services.tag_service import get_or_create_tag as _get_or_create_tag
-    return _get_or_create_tag(db, tag_name)
+    """
+    获取或创建标签
+    如果标签已存在则返回，不存在则创建
+    
+    Args:
+        db: 数据库会话
+        tag_name: 标签名称
+        
+    Returns:
+        Tag 对象
+    """
+    # 规范化标签名称：去除首尾空格，转为小写（可选，根据需求决定是否区分大小写）
+    tag_name = tag_name.strip().lower()
+    
+    # 查找是否已存在该标签
+    tag = db.query(Tag).filter(Tag.name == tag_name).first()
+    
+    if not tag:
+        # 如果不存在则创建新标签
+        tag = Tag(name=tag_name)
+        db.add(tag)
+        db.commit()
+        db.refresh(tag)
+    
+    return tag
 
 
 @app.post("/upload")
@@ -1090,8 +1428,10 @@ async def delete_file(
     }
 
 
-# BatchDownloadRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
+class BatchDownloadRequest(BaseModel):
+    """批量下载请求模型"""
+    file_ids: List[int]
+
 
 @app.post("/files/batch-download")
 async def batch_download(
@@ -1136,8 +1476,10 @@ async def batch_download(
     )
 
 
-# UpdateFileTagsRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
+class UpdateFileTagsRequest(BaseModel):
+    """更新文件标签请求模型"""
+    tags: List[str]
+
 
 @app.put("/files/{file_id}/tags")
 async def update_file_tags(
@@ -1223,13 +1565,32 @@ async def batch_update_tags(
 
 # ==================== 管理后台 API ====================
 
-# 所有请求模型已迁移到 backend.app.api.schemas
-# 已在文件开头导入：
-# - CreateUserRequest
-# - UpdateUserRequest
-# - CreateTagRequest
-# - UpdateTagRequest
-# - BatchDeleteRequest
+class CreateUserRequest(BaseModel):
+    """创建用户请求模型"""
+    username: str
+    password: str
+    is_admin: bool = False
+
+
+class UpdateUserRequest(BaseModel):
+    """更新用户请求模型"""
+    password: Optional[str] = None
+    is_admin: Optional[bool] = None
+
+
+class CreateTagRequest(BaseModel):
+    """创建标签请求模型"""
+    name: str
+
+
+class UpdateTagRequest(BaseModel):
+    """更新标签请求模型"""
+    name: str
+
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求模型"""
+    ids: List[int]
 
 
 # ==================== 文件管理 API ====================
@@ -1594,8 +1955,10 @@ async def admin_delete_user(
     }
 
 
-# ResetPasswordRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
+class ResetPasswordRequest(BaseModel):
+    """重置密码请求模型"""
+    password: str
+
 
 @app.post("/admin/users/{user_id}/reset-password")
 async def admin_reset_user_password(
@@ -1627,8 +1990,10 @@ async def admin_reset_user_password(
     }
 
 
-# BatchCreateUserRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
+class BatchCreateUserRequest(BaseModel):
+    """批量创建用户请求模型"""
+    users: List[CreateUserRequest]
+
 
 @app.post("/admin/users/batch-create")
 async def admin_batch_create_users(

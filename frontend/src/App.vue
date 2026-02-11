@@ -129,8 +129,9 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
     'Noto Color Emoji';
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #f5f7fa;
   min-height: 100vh;
+  color: #2c3e50;
 }
 
 #app {
@@ -143,20 +144,22 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  background: #f5f7fa;
 }
 
 .app-header {
-  background: linear-gradient(135deg, #409EFF 0%, #66b1ff 100%);
-  color: white;
+  background: #2c3e50;
+  color: #ffffff;
   padding: 0;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid #34495e;
 }
 
 .header-content {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 0 24px;
-  height: 100%;
+  padding: 0 32px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -169,43 +172,56 @@ body {
 .user-info {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: white;
+  gap: 8px;
+  color: #ecf0f1;
   cursor: pointer;
-  padding: 8px 12px;
-  border-radius: 4px;
-  transition: background-color 0.3s;
+  padding: 8px 16px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .user-info:hover {
   background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
 }
 
 .dropdown-icon {
   font-size: 12px;
+  margin-left: 4px;
 }
 
 .logo-section {
   display: flex;
   align-items: center;
   gap: 12px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.logo-section:hover {
+  opacity: 0.9;
 }
 
 .logo-icon {
-  font-size: 32px;
-  color: white;
+  font-size: 28px;
+  color: #ecf0f1;
 }
 
 .app-title {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 600;
-  color: white;
+  color: #ffffff;
   margin: 0;
+  letter-spacing: 0.5px;
 }
 
 .nav-menu {
   display: flex;
   align-items: center;
+  flex: 1;
+  justify-content: center;
 }
 
 .header-menu {
@@ -214,26 +230,31 @@ body {
 }
 
 .header-menu .el-menu-item {
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(255, 255, 255, 0.85);
   border-bottom: 2px solid transparent;
-  padding: 0 20px;
+  padding: 0 24px;
+  height: 64px;
+  line-height: 64px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .header-menu .el-menu-item:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
 }
 
 .header-menu .el-menu-item.is-active {
-  color: white;
-  border-bottom-color: white;
-  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border-bottom-color: #1e88e5;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .app-main {
   flex: 1;
-  padding: 24px;
-  background: transparent;
+  padding: 32px;
+  background: #f5f7fa;
 }
 
 .content-wrapper {
@@ -244,15 +265,20 @@ body {
 /* 响应式设计 */
 @media (max-width: 768px) {
   .app-main {
-    padding: 16px;
+    padding: 20px;
   }
 
   .app-title {
-    font-size: 20px;
+    font-size: 18px;
   }
 
   .header-content {
     padding: 0 16px;
+  }
+
+  .header-menu .el-menu-item {
+    padding: 0 12px;
+    font-size: 13px;
   }
 }
 </style>

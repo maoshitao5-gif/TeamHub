@@ -252,60 +252,133 @@ defineExpose({
 
 .list-card {
   border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.list-card :deep(.el-card__header) {
+  background: #ffffff;
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+}
+
+.list-card :deep(.el-card__body) {
+  padding: 20px;
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 16px;
   font-weight: 600;
-  color: #409EFF;
+  color: #2c3e50;
+}
+
+.card-header .el-icon {
+  color: #2c3e50;
+  font-size: 18px;
 }
 
 .file-name-cell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .file-icon {
-  color: #409EFF;
+  color: #7f8c8d;
   font-size: 18px;
 }
 
 .file-name {
   font-weight: 500;
-  color: #303133;
+  color: #2c3e50;
   cursor: default;
+  font-size: 14px;
 }
 
 .file-name.previewable {
-  color: #409EFF;
+  color: #1e88e5;
   cursor: pointer;
   text-decoration: none;
-  transition: color 0.3s, text-decoration 0.3s;
+  transition: all 0.2s ease;
 }
 
 .file-name.previewable:hover {
-  color: #66b1ff;
+  color: #1565c0;
   text-decoration: underline;
 }
 
 .tags-cell {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
 }
 
 .file-tag {
   margin: 0;
   border: none;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
 }
 
 .no-tags {
-  color: #909399;
+  color: #95a5a6;
   font-size: 12px;
+  font-style: italic;
+}
+
+/* 表格样式优化 */
+:deep(.el-table) {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+:deep(.el-table th) {
+  background: #f8f9fa;
+  color: #2c3e50;
+  font-weight: 600;
+  border-bottom: 2px solid #e4e7ed;
+}
+
+:deep(.el-table td) {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
+  background: #fafbfc;
+}
+
+:deep(.el-table .el-button--link) {
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:deep(.el-table .el-button--link.is-link) {
+  color: #1e88e5;
+}
+
+:deep(.el-table .el-button--link.is-link:hover) {
+  color: #1565c0;
+}
+
+:deep(.el-table .el-button--link.el-button--success) {
+  color: #2e7d32;
+}
+
+:deep(.el-table .el-button--link.el-button--success:hover) {
+  color: #1b5e20;
+}
+
+:deep(.el-table .el-button--link.el-button--danger) {
+  color: #c62828;
+}
+
+:deep(.el-table .el-button--link.el-button--danger:hover) {
+  color: #b71c1c;
 }
 </style>

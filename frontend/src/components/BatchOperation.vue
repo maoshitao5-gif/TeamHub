@@ -253,65 +253,159 @@ const handleClearSelection = () => {
 
 <style scoped>
 .batch-operation-bar {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .batch-card {
   border-radius: 8px;
-  background: linear-gradient(135deg, #ecf5ff 0%, #d9ecff 100%);
-  border: 1px solid #b3d8ff;
+  background: #ffffff;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.batch-card :deep(.el-card__body) {
+  padding: 16px 20px;
 }
 
 .batch-content {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .batch-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 14px;
-  color: #409EFF;
+  color: #2c3e50;
   font-weight: 500;
+}
+
+.batch-info .el-icon {
+  color: #1e88e5;
+  font-size: 18px;
+}
+
+.batch-info strong {
+  color: #1e88e5;
+  font-weight: 600;
 }
 
 .batch-actions {
   display: flex;
-  gap: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.batch-actions :deep(.el-button) {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.batch-actions :deep(.el-button--primary) {
+  background: #1e88e5;
+  border-color: #1e88e5;
+}
+
+.batch-actions :deep(.el-button--primary:hover) {
+  background: #1565c0;
+  border-color: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(30, 136, 229, 0.2);
+}
+
+.batch-actions :deep(.el-button--success) {
+  background: #2e7d32;
+  border-color: #2e7d32;
+}
+
+.batch-actions :deep(.el-button--success:hover) {
+  background: #1b5e20;
+  border-color: #1b5e20;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(46, 125, 50, 0.2);
+}
+
+.batch-actions :deep(.el-button--danger) {
+  background: #c62828;
+  border-color: #c62828;
+}
+
+.batch-actions :deep(.el-button--danger:hover) {
+  background: #b71c1c;
+  border-color: #b71c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.2);
+}
+
+.batch-actions :deep(.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--danger)) {
+  background: #f8f9fa;
+  border-color: #e4e7ed;
+  color: #34495e;
+}
+
+.batch-actions :deep(.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--danger):hover) {
+  background: #e9ecef;
+  border-color: #d0d7de;
+  color: #2c3e50;
 }
 
 .tag-input-section {
-  padding: 16px;
-  background: #f5f7fa;
+  padding: 20px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 6px;
 }
 
 .tag-input-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
   font-size: 14px;
   font-weight: 500;
-  color: #606266;
+  color: #34495e;
+}
+
+.tag-input-label .el-icon {
+  color: #2c3e50;
 }
 
 .tag-input-wrapper {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
 }
 
 .tag-item {
   margin: 0;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
 }
 
 .tag-input {
   width: 200px;
+}
+
+.tag-input :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px #e4e7ed inset;
+  border-radius: 6px;
+}
+
+.tag-input :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #c0c4cc inset;
+}
+
+.tag-input :deep(.el-input.is-focus .el-input__wrapper) {
+  box-shadow: 0 0 0 1px #1e88e5 inset;
 }
 
 .tag-suggestion {
@@ -322,10 +416,11 @@ const handleClearSelection = () => {
 
 .tag-name {
   font-weight: 500;
+  color: #2c3e50;
 }
 
 .tag-count {
-  color: #909399;
+  color: #7f8c8d;
   font-size: 12px;
 }
 </style>

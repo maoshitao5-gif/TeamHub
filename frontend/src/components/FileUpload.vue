@@ -212,6 +212,45 @@
       </div>
     </el-card>
 
+    <!-- 删除原文件确认对话框 -->
+    <el-dialog
+      v-model="showDeleteSourceDialog"
+      title="是否删除原路径文件"
+      width="500px"
+    >
+      <div class="delete-source-info">
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 20px;"
+        >
+          <template #title>
+            <div style="font-size: 14px;">
+              文件已添加到上传队列
+            </div>
+          </template>
+        </el-alert>
+        
+        <div class="file-path-display">
+          <el-text type="primary" style="font-weight: 600;">文件路径：</el-text>
+          <el-text type="info" style="word-break: break-all; font-family: monospace; font-size: 12px;">
+            {{ sourceFilePath || '未知路径' }}
+          </el-text>
+        </div>
+        
+        <div style="margin-top: 16px;">
+          <el-text type="warning" size="small">
+            ⚠️ 注意：删除操作将在文件上传成功后执行。如果上传失败，原文件不会被删除。
+          </el-text>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="handleCancelDeleteSource">保留原文件</el-button>
+        <el-button type="danger" @click="handleConfirmDeleteSource">删除原文件</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 重复文件警告对话框 -->
     <el-dialog
       v-model="duplicateDialogVisible"
@@ -317,6 +356,12 @@ const compressing = ref(false) // 压缩中状态
 // 拖拽状态
 const isDragging = ref(false) // 是否正在拖拽
 const dragCounter = ref(0) // 拖拽计数器，用于处理嵌套元素
+
+// 删除原文件相关
+const showDeleteSourceDialog = ref(false) // 是否显示删除原文件对话框
+const sourceFileHandle = ref(null) // 存储文件句柄（用于File System Access API）
+const sourceFilePath = ref('') // 存储文件路径（用于显示）
+const pendingDeleteAfterUpload = ref(false) // 标记是否在上传成功后删除原文件
 
 // 计算是否可以上传
 const canUpload = computed(() => {
@@ -431,6 +476,32 @@ const handleFileChange = (uploadFile, uploadFiles) => {
   
   // 强制触发响应式更新
   fileList.value = [...fileList.value]
+  
+  // 如果文件是通过点击选择（非拖拽），也需要显示删除对话框
+  // 检查是否是点击选择（没有文件句柄和路径信息）
+  if (fileList.value.length > 0 && uploadMode.value === 'single') {
+    const fileObj = fileList.value[0]
+    const file = fileObj.raw || fileObj
+    
+    // 如果文件对象中没有存储文件句柄信息，说明是通过点击选择的
+    if (file && !fileObj._fileHandle && !fileObj._fileEntry && !fileObj._filePath) {
+      // 尝试获取文件路径信息
+      let filePath = file.name
+      if (file.path) {
+        filePath = file.path
+      }
+      
+      // 存储文件信息
+      sourceFileHandle.value = null // 点击选择无法获取文件句柄
+      sourceFilePath.value = filePath
+      
+      // 延迟显示对话框，确保文件已添加到列表
+      setTimeout(() => {
+        showDeleteSourceDialog.value = true
+        console.log('通过点击选择文件，显示删除原文件对话框')
+      }, 100)
+    }
+  }
 }
 
 // 触发文件夹选择
@@ -572,21 +643,88 @@ const handleSingleFileDrop = async (event) => {
       // 只取第一个文件
       const file = files[0]
       
+      // 尝试获取文件句柄（File System Access API）
+      let fileHandle = null
+      let filePath = file.name
+      let fileEntry = null
+      
+      // 检查是否支持 File System Access API
+      if (event.dataTransfer.items && event.dataTransfer.items.length > 0) {
+        const item = event.dataTransfer.items[0]
+        
+        // 方法1: 尝试使用 getAsFileSystemHandle (File System Access API)
+        if (typeof item.getAsFileSystemHandle === 'function') {
+          try {
+            const handle = await item.getAsFileSystemHandle()
+            if (handle && handle.kind === 'file') {
+              fileHandle = handle
+              filePath = handle.name
+              console.log('通过 getAsFileSystemHandle 获取文件句柄成功')
+            }
+          } catch (error) {
+            console.warn('getAsFileSystemHandle 失败:', error)
+          }
+        }
+        
+        // 方法2: 尝试使用 webkitGetAsEntry (File System API)
+        if (!fileHandle) {
+          try {
+            const entry = item.webkitGetAsEntry()
+            if (entry && entry.isFile) {
+              fileEntry = entry
+              filePath = entry.fullPath || entry.name || file.name
+              console.log('通过 webkitGetAsEntry 获取文件条目成功:', filePath)
+            }
+          } catch (error) {
+            console.warn('webkitGetAsEntry 失败:', error)
+          }
+        }
+      }
+      
+      // 如果无法获取文件句柄，尝试从文件路径获取
+      if (!fileHandle && !fileEntry && file.path) {
+        filePath = file.path
+        console.log('使用文件路径:', filePath)
+      }
+      
+      // 如果都没有，至少使用文件名
+      if (!filePath) {
+        filePath = file.name
+      }
+      
       // 创建符合 Element Plus el-upload 组件格式的文件对象
-      // el-upload 需要 name 属性来显示文件名
       const uploadFileObj = {
         name: file.name,
         size: file.size,
         raw: file,
-        uid: Date.now(), // 添加唯一ID，Element Plus 需要
-        status: 'ready' // 设置状态为准备就绪
+        uid: Date.now(),
+        status: 'ready',
+        _fileHandle: fileHandle, // 存储文件句柄（File System Access API）
+        _fileEntry: fileEntry, // 存储文件条目（File System API）
+        _filePath: filePath // 存储文件路径
       }
       
       // 调用 handleFileChange 来确保 el-upload 组件正确更新
-      // 这样可以触发组件的内部状态更新，确保文件名正确显示
       handleFileChange(uploadFileObj, [uploadFileObj])
       
-      ElMessage.success(`已选择文件: ${file.name}`)
+      // 总是显示删除原文件对话框（无论是否有文件句柄）
+      // 存储文件信息用于后续删除
+      sourceFileHandle.value = fileHandle || fileEntry // 存储文件句柄或条目
+      sourceFilePath.value = filePath
+      
+      console.log('文件信息:', {
+        name: file.name,
+        size: file.size,
+        hasFileHandle: !!fileHandle,
+        hasFileEntry: !!fileEntry,
+        filePath: filePath
+      })
+      
+      // 延迟显示对话框，确保文件已添加到列表
+      setTimeout(() => {
+        showDeleteSourceDialog.value = true
+        console.log('显示删除原文件对话框')
+      }, 100)
     }
   } else {
     ElMessage.warning('无法识别拖拽的内容，请重试')
@@ -891,6 +1029,12 @@ const handleSingleUpload = async () => {
     validating.value = false
     
     ElMessage.success('文件上传成功！')
+    
+    // 如果用户选择删除原文件，执行删除操作
+    if (pendingDeleteAfterUpload.value) {
+      await deleteSourceFile()
+    }
+    
     emit('upload-success')
     
     // 延迟重置表单，让用户看到成功状态
@@ -1224,6 +1368,11 @@ const handleFolderUpload = async () => {
     
     ElMessage.success(`文件夹上传成功！已压缩为 ${zipFileName}`)
     
+    // 如果用户选择删除原文件，执行删除操作
+    if (pendingDeleteAfterUpload.value) {
+      await deleteSourceFile()
+    }
+    
     emit('upload-success')
     
     // 延迟重置表单，让用户看到成功状态
@@ -1332,6 +1481,134 @@ const handleFolderUpload = async () => {
   }
 }
 
+// 处理取消删除原文件
+const handleCancelDeleteSource = () => {
+  showDeleteSourceDialog.value = false
+  sourceFileHandle.value = null
+  sourceFilePath.value = ''
+  pendingDeleteAfterUpload.value = false
+}
+
+// 处理确认删除原文件
+const handleConfirmDeleteSource = () => {
+  pendingDeleteAfterUpload.value = true
+  showDeleteSourceDialog.value = false
+  ElMessage.success('已标记：文件上传成功后将删除原文件')
+  console.log('用户选择删除原文件，已标记待删除:', sourceFilePath.value)
+}
+
+// 删除原路径文件
+const deleteSourceFile = async () => {
+  if (!pendingDeleteAfterUpload.value) {
+    return
+  }
+  
+  console.log('开始删除原文件:', {
+    hasHandle: !!sourceFileHandle.value,
+    filePath: sourceFilePath.value,
+    handleType: sourceFileHandle.value?.constructor?.name
+  })
+  
+  if (sourceFileHandle.value) {
+    try {
+      const handle = sourceFileHandle.value
+      
+      // 方法1: 尝试使用 File System Access API (FileSystemFileHandle)
+      if (handle.kind === 'file' && typeof handle.remove === 'function') {
+        try {
+          await handle.remove()
+          ElMessage.success('原文件已删除')
+          console.log('✅ 通过 File System Access API 删除成功:', sourceFilePath.value)
+          // 清理状态
+          sourceFileHandle.value = null
+          sourceFilePath.value = ''
+          pendingDeleteAfterUpload.value = false
+          return
+        } catch (error) {
+          console.warn('File System Access API 删除失败:', error)
+        }
+      }
+      
+      // 方法2: 尝试通过父目录删除 (File System Access API)
+      if (handle.kind === 'file' && typeof handle.getParent === 'function') {
+        try {
+          const parentHandle = await handle.getParent()
+          if (parentHandle && typeof parentHandle.removeEntry === 'function') {
+            await parentHandle.removeEntry(handle.name, { recursive: false })
+            ElMessage.success('原文件已删除')
+            console.log('✅ 通过父目录删除成功:', sourceFilePath.value)
+            // 清理状态
+            sourceFileHandle.value = null
+            sourceFilePath.value = ''
+            pendingDeleteAfterUpload.value = false
+            return
+          }
+        } catch (error) {
+          console.warn('通过父目录删除失败:', error)
+        }
+      }
+      
+      // 方法3: 尝试使用 File System API (FileEntry)
+      // 注意：FileEntry 的 remove 方法需要回调函数
+      if (handle.isFile) {
+        try {
+          // FileEntry.remove() 使用回调函数
+          await new Promise((resolve, reject) => {
+            if (typeof handle.remove === 'function') {
+              handle.remove(resolve, reject)
+            } else {
+              reject(new Error('FileEntry.remove 方法不存在'))
+            }
+          })
+          ElMessage.success('原文件已删除')
+          console.log('✅ 通过 File System API 删除成功:', sourceFilePath.value)
+          // 清理状态
+          sourceFileHandle.value = null
+          sourceFilePath.value = ''
+          pendingDeleteAfterUpload.value = false
+          return
+        } catch (error) {
+          console.warn('File System API 删除失败:', error)
+          // 继续尝试其他方法
+        }
+      }
+      
+      // 如果所有方法都失败，提示用户手动删除
+      console.warn('所有自动删除方法都失败，提示用户手动删除')
+      ElMessage.warning({
+        message: `无法自动删除原文件，请手动删除: ${sourceFilePath.value}`,
+        duration: 8000,
+        showClose: true
+      })
+      
+    } catch (error) {
+      console.error('删除原文件时发生错误:', error)
+      ElMessage.warning({
+        message: `删除原文件失败，请手动删除: ${sourceFilePath.value || '未知路径'}`,
+        duration: 8000,
+        showClose: true
+      })
+    } finally {
+      // 清理状态
+      sourceFileHandle.value = null
+      sourceFilePath.value = ''
+      pendingDeleteAfterUpload.value = false
+    }
+  } else {
+    // 没有文件句柄，提示用户手动删除
+    console.warn('没有文件句柄，提示用户手动删除')
+    if (sourceFilePath.value) {
+      ElMessage.info({
+        message: `文件上传成功！请手动删除原文件: ${sourceFilePath.value}`,
+        duration: 5000,
+        showClose: true
+      })
+    }
+    sourceFilePath.value = ''
+    pendingDeleteAfterUpload.value = false
+  }
+}
+
 // 关闭重复文件对话框
 const handleCloseDuplicateDialog = () => {
   duplicateDialogVisible.value = false
@@ -1390,6 +1667,10 @@ const handleReset = () => {
   uploading.value = false
   validating.value = false
   compressing.value = false
+  sourceFileHandle.value = null
+  sourceFilePath.value = ''
+  pendingDeleteAfterUpload.value = false
+  showDeleteSourceDialog.value = false
   if (uploadRef.value) {
     uploadRef.value.clearFiles()
   }
@@ -1411,48 +1692,86 @@ onMounted(() => {
 
 .upload-card {
   border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.upload-card :deep(.el-card__header) {
+  background: #ffffff;
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+}
+
+.upload-card :deep(.el-card__body) {
+  padding: 20px;
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 16px;
   font-weight: 600;
-  color: #409EFF;
+  color: #2c3e50;
+}
+
+.card-header .el-icon {
+  color: #2c3e50;
+  font-size: 18px;
 }
 
 .tag-input-section {
   margin-bottom: 24px;
-  padding: 16px;
-  background: #f5f7fa;
+  padding: 20px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 6px;
 }
 
 .tag-input-label {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin-bottom: 14px;
   font-size: 14px;
   font-weight: 500;
-  color: #606266;
+  color: #34495e;
+}
+
+.tag-input-label .el-icon {
+  color: #2c3e50;
 }
 
 .tag-input-wrapper {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .tag-item {
   margin: 0;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
 }
 
 .tag-input {
   width: 300px;
+}
+
+.tag-input :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px #e4e7ed inset;
+  border-radius: 6px;
+}
+
+.tag-input :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #c0c4cc inset;
+}
+
+.tag-input :deep(.el-input.is-focus .el-input__wrapper) {
+  box-shadow: 0 0 0 1px #1e88e5 inset;
 }
 
 .tag-suggestion {
@@ -1463,20 +1782,29 @@ onMounted(() => {
 
 .tag-name {
   font-weight: 500;
+  color: #2c3e50;
 }
 
 .tag-count {
-  color: #909399;
+  color: #7f8c8d;
   font-size: 12px;
 }
 
 /* 自动完成下拉框样式 */
 :deep(.tag-autocomplete-popper) {
   max-height: 300px;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
 }
 
 .tag-hint {
-  margin-top: 8px;
+  margin-top: 10px;
+}
+
+.tag-hint :deep(.el-text) {
+  color: #7f8c8d;
+  font-size: 12px;
 }
 
 .upload-dragger {
@@ -1484,17 +1812,51 @@ onMounted(() => {
   margin-bottom: 20px;
 }
 
+.upload-dragger :deep(.el-upload-dragger) {
+  border: 2px dashed #d0d7de;
+  border-radius: 6px;
+  background: #fafbfc;
+  transition: all 0.2s ease;
+}
+
+.upload-dragger :deep(.el-upload-dragger:hover) {
+  border-color: #1e88e5;
+  background: #f8f9fa;
+}
+
+.upload-dragger :deep(.el-icon--upload) {
+  color: #95a5a6;
+  font-size: 56px;
+}
+
+.upload-dragger :deep(.el-upload__text) {
+  color: #34495e;
+  font-size: 14px;
+}
+
+.upload-dragger :deep(.el-upload__text em) {
+  color: #1e88e5;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.upload-dragger :deep(.el-upload__tip) {
+  color: #7f8c8d;
+  font-size: 12px;
+}
+
 .upload-status-section {
   margin: 20px 0;
-  padding: 16px;
-  background: #f5f7fa;
+  padding: 18px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 6px;
 }
 
 .status-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 12px;
 }
 
@@ -1503,36 +1865,36 @@ onMounted(() => {
 }
 
 .status-icon.uploading {
-  color: #409EFF;
+  color: #1e88e5;
   animation: rotate 1s linear infinite;
 }
 
 .status-icon.compressing {
-  color: #67C23A;
+  color: #2e7d32;
   animation: rotate 1s linear infinite;
 }
 
 .status-icon.validating {
-  color: #E6A23C;
+  color: #f57c00;
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 .status-icon.success {
-  color: #67C23A;
+  color: #2e7d32;
 }
 
 .status-icon.duplicate {
-  color: #E6A23C;
+  color: #f57c00;
 }
 
 .status-icon.error {
-  color: #F56C6C;
+  color: #c62828;
 }
 
 .status-text {
   font-size: 14px;
   font-weight: 500;
-  color: #606266;
+  color: #34495e;
 }
 
 @keyframes rotate {
@@ -1557,7 +1919,27 @@ onMounted(() => {
   display: flex;
   justify-content: center;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: 24px;
+}
+
+.upload-actions :deep(.el-button) {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.upload-actions :deep(.el-button--primary) {
+  background: #2c3e50;
+  border-color: #2c3e50;
+}
+
+.upload-actions :deep(.el-button--primary:hover) {
+  background: #34495e;
+  border-color: #34495e;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(44, 62, 80, 0.2);
 }
 
 .duplicate-info {
@@ -1570,26 +1952,58 @@ onMounted(() => {
 
 .file-name {
   font-weight: 600;
-  color: #409EFF;
+  color: #1e88e5;
   word-break: break-all;
+  font-size: 14px;
 }
 
 .upload-status {
   margin-top: 12px;
-  padding: 8px 16px;
-  background: #f0f9ff;
-  border-radius: 4px;
+  padding: 12px 16px;
+  background: #f0f4f8;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
   text-align: center;
+  color: #34495e;
+  font-size: 13px;
 }
 
 .upload-mode-section {
-  margin-bottom: 20px;
-  padding: 16px;
-  background: #f5f7fa;
+  margin-bottom: 24px;
+  padding: 18px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 6px;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  gap: 12px;
+}
+
+.upload-mode-section :deep(.el-radio-group) {
+  display: flex;
+  gap: 0;
+}
+
+.upload-mode-section :deep(.el-radio-button__inner) {
+  padding: 10px 20px;
+  border-radius: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.upload-mode-section :deep(.el-radio-button:first-child .el-radio-button__inner) {
+  border-radius: 6px 0 0 6px;
+}
+
+.upload-mode-section :deep(.el-radio-button:last-child .el-radio-button__inner) {
+  border-radius: 0 6px 6px 0;
+}
+
+.upload-mode-section :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: #2c3e50;
+  border-color: #2c3e50;
+  color: #ffffff;
 }
 
 .folder-upload-area {
@@ -1598,44 +2012,46 @@ onMounted(() => {
 
 .folder-upload-dragger {
   width: 100%;
-  padding: 40px;
-  border: 2px dashed #d9d9d9;
+  padding: 50px 40px;
+  border: 2px dashed #d0d7de;
   border-radius: 6px;
   text-align: center;
   cursor: pointer;
-  background-color: #fafafa;
-  transition: border-color 0.3s, background-color 0.3s;
+  background-color: #fafbfc;
+  transition: all 0.2s ease;
 }
 
 .folder-upload-dragger.drag-over {
-  border-color: #409EFF;
-  background-color: #ecf5ff;
+  border-color: #1e88e5;
+  background-color: #f0f4f8;
 }
 
 .folder-upload-dragger:hover {
-  border-color: #409EFF;
-  background-color: #f0f9ff;
+  border-color: #1e88e5;
+  background-color: #f8f9fa;
 }
 
 .folder-upload-dragger .el-icon--upload {
-  font-size: 67px;
-  color: #c0c4cc;
-  margin-bottom: 16px;
+  font-size: 64px;
+  color: #95a5a6;
+  margin-bottom: 20px;
 }
 
 .folder-upload-dragger .el-upload__text {
-  color: #606266;
+  color: #34495e;
   font-size: 14px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  font-weight: 500;
 }
 
 .folder-upload-dragger .el-upload__text em {
-  color: #409EFF;
+  color: #1e88e5;
   font-style: normal;
+  font-weight: 600;
 }
 
 .folder-upload-dragger .el-upload__tip {
-  color: #909399;
+  color: #7f8c8d;
   font-size: 12px;
 }
 
@@ -1652,17 +2068,34 @@ onMounted(() => {
 .folder-file-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  background: #f5f7fa;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
   border-radius: 4px;
 }
 
 .folder-file-item .file-path {
   flex: 1;
-  font-family: monospace;
+  font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px;
-  color: #606266;
+  color: #34495e;
   word-break: break-all;
+}
+
+.delete-source-info {
+  padding: 12px 0;
+}
+
+.file-path-display {
+  margin: 16px 0;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  word-break: break-all;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  color: #34495e;
 }
 </style>

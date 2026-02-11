@@ -1,0 +1,268 @@
+/**
+ * 全局样式文件
+ * 统一简约严肃风格的设计规范
+ */
+
+/* ========== 颜色变量 ========== */
+:root {
+  /* 主色调 - 深灰蓝色系 */
+  --color-primary: #2c3e50;
+  --color-primary-dark: #34495e;
+  --color-primary-light: #ecf0f1;
+  
+  /* 强调色 - 深蓝色 */
+  --color-accent: #1e88e5;
+  --color-accent-dark: #1565c0;
+  --color-accent-light: #e3f2fd;
+  
+  /* 成功色 - 深绿色 */
+  --color-success: #2e7d32;
+  --color-success-dark: #1b5e20;
+  --color-success-light: #e8f5e9;
+  
+  /* 危险色 - 深红色 */
+  --color-danger: #c62828;
+  --color-danger-dark: #b71c1c;
+  --color-danger-light: #ffebee;
+  
+  /* 警告色 - 深橙色 */
+  --color-warning: #f57c00;
+  --color-warning-dark: #e65100;
+  --color-warning-light: #fff3e0;
+  
+  /* 中性色 */
+  --color-text-primary: #2c3e50;
+  --color-text-secondary: #34495e;
+  --color-text-tertiary: #7f8c8d;
+  --color-text-disabled: #95a5a6;
+  
+  /* 背景色 */
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f8f9fa;
+  --color-bg-tertiary: #f5f7fa;
+  
+  /* 边框色 */
+  --color-border: #e4e7ed;
+  --color-border-light: #f0f0f0;
+  --color-border-dark: #d0d7de;
+  
+  /* 阴影 */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* ========== 全局按钮样式 ========== */
+.el-button {
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.el-button--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.el-button--primary:hover {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(44, 62, 80, 0.2);
+}
+
+.el-button--primary:active {
+  transform: translateY(0);
+}
+
+.el-button--success {
+  background: var(--color-success);
+  border-color: var(--color-success);
+}
+
+.el-button--success:hover {
+  background: var(--color-success-dark);
+  border-color: var(--color-success-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(46, 125, 50, 0.2);
+}
+
+.el-button--danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.el-button--danger:hover {
+  background: var(--color-danger-dark);
+  border-color: var(--color-danger-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.2);
+}
+
+.el-button--warning {
+  background: var(--color-warning);
+  border-color: var(--color-warning);
+}
+
+.el-button--warning:hover {
+  background: var(--color-warning-dark);
+  border-color: var(--color-warning-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 124, 0, 0.2);
+}
+
+/* ========== 卡片样式 ========== */
+.el-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+
+.el-card__header {
+  background: var(--color-bg-primary);
+  border-bottom: 1px solid var(--color-border);
+  padding: 16px 20px;
+}
+
+.el-card__body {
+  padding: 20px;
+}
+
+/* ========== 输入框样式 ========== */
+.el-input__wrapper {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--color-border) inset;
+  transition: all 0.2s ease;
+}
+
+.el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--color-border-dark) inset;
+}
+
+.el-input.is-focus .el-input__wrapper {
+  box-shadow: 0 0 0 1px var(--color-accent) inset;
+}
+
+/* ========== 表格样式 ========== */
+.el-table {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.el-table th {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  border-bottom: 2px solid var(--color-border);
+}
+
+.el-table td {
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.el-table--striped .el-table__body tr.el-table__row--striped td {
+  background: var(--color-bg-tertiary);
+}
+
+/* ========== 标签样式 ========== */
+.el-tag {
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 4px 10px;
+  font-weight: 500;
+}
+
+/* ========== 对话框样式 ========== */
+.el-dialog {
+  border-radius: 8px;
+}
+
+.el-dialog__header {
+  border-bottom: 1px solid var(--color-border);
+  padding: 20px 20px 16px;
+}
+
+.el-dialog__title {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.el-dialog__body {
+  padding: 20px;
+}
+
+.el-dialog__footer {
+  border-top: 1px solid var(--color-border);
+  padding: 16px 20px;
+}
+
+/* ========== 标签页样式 ========== */
+.el-tabs__header {
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 20px;
+}
+
+.el-tabs__item {
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+  padding: 0 24px;
+  transition: color 0.2s ease;
+}
+
+.el-tabs__item:hover {
+  color: var(--color-text-primary);
+}
+
+.el-tabs__item.is-active {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.el-tabs__active-bar {
+  background-color: var(--color-accent);
+}
+
+/* ========== 分页样式 ========== */
+.el-pagination .el-pager li {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.el-pagination .el-pager li.is-active {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.el-pagination .btn-prev,
+.el-pagination .btn-next {
+  color: var(--color-text-secondary);
+}
+
+.el-pagination .btn-prev:hover,
+.el-pagination .btn-next:hover {
+  color: var(--color-accent);
+}
+
+/* ========== 滚动条样式 ========== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-secondary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-dark);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-tertiary);
+}

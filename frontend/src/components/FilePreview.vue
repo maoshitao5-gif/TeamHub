@@ -121,10 +121,48 @@ watch(() => props.file, () => {
 </script>
 
 <style scoped>
+.file-preview-dialog :deep(.el-dialog) {
+  border-radius: 8px;
+}
+
+.file-preview-dialog :deep(.el-dialog__header) {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+.file-preview-dialog :deep(.el-dialog__title) {
+  color: #2c3e50;
+  font-weight: 600;
+  font-size: 16px;
+}
+
 .file-preview-dialog :deep(.el-dialog__body) {
   padding: 20px;
   max-height: 70vh;
   overflow: auto;
+  background: #fafbfc;
+}
+
+.file-preview-dialog :deep(.el-dialog__footer) {
+  padding: 16px 20px;
+  border-top: 1px solid #e4e7ed;
+}
+
+.file-preview-dialog :deep(.el-dialog__footer .el-button) {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+.file-preview-dialog :deep(.el-dialog__footer .el-button--primary) {
+  background: #2c3e50;
+  border-color: #2c3e50;
+}
+
+.file-preview-dialog :deep(.el-dialog__footer .el-button--primary:hover) {
+  background: #34495e;
+  border-color: #34495e;
 }
 
 .preview-content {
@@ -138,15 +176,17 @@ watch(() => props.file, () => {
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
-  border-radius: 4px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  border: 1px solid #e4e7ed;
 }
 
 .preview-pdf {
   width: 100%;
   height: 70vh;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .preview-unsupported {
@@ -156,13 +196,30 @@ watch(() => props.file, () => {
 
 .unsupported-icon {
   font-size: 64px;
-  color: #909399;
-  margin-bottom: 20px;
+  color: #95a5a6;
+  margin-bottom: 24px;
 }
 
 .preview-unsupported p {
-  color: #606266;
+  color: #34495e;
   font-size: 16px;
-  margin-bottom: 20px;
+  font-weight: 500;
+  margin-bottom: 24px;
+}
+
+.preview-unsupported :deep(.el-button) {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  background: #2c3e50;
+  border-color: #2c3e50;
+}
+
+.preview-unsupported :deep(.el-button:hover) {
+  background: #34495e;
+  border-color: #34495e;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(44, 62, 80, 0.2);
 }
 </style>

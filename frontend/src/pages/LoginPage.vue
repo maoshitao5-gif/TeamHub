@@ -141,65 +141,109 @@ const handleLogin = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #f5f7fa;
   padding: 20px;
 }
 
 .login-card {
   width: 100%;
-  max-width: 400px;
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-  padding: 40px;
+  max-width: 420px;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  padding: 48px 40px;
+  border: 1px solid #e4e7ed;
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 32px;
+  margin-bottom: 40px;
 }
 
 .logo-icon {
   font-size: 48px;
-  color: #409EFF;
-  margin-bottom: 16px;
+  color: #2c3e50;
+  margin-bottom: 20px;
 }
 
 .login-title {
   font-size: 24px;
   font-weight: 600;
-  color: #303133;
-  margin: 0 0 8px 0;
+  color: #2c3e50;
+  margin: 0 0 12px 0;
+  letter-spacing: 0.5px;
 }
 
 .login-subtitle {
   font-size: 14px;
-  color: #909399;
+  color: #7f8c8d;
   margin: 0;
+  font-weight: 400;
 }
 
 .login-form {
   margin-top: 32px;
 }
 
+.login-form :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px #e4e7ed inset;
+  border-radius: 6px;
+}
+
+.login-form :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #c0c4cc inset;
+}
+
+.login-form :deep(.el-input.is-focus .el-input__wrapper) {
+  box-shadow: 0 0 0 1px #1e88e5 inset;
+}
+
 .login-button {
   width: 100%;
-  margin-top: 8px;
+  margin-top: 12px;
+  height: 44px;
+  font-size: 15px;
+  font-weight: 500;
+  background: #2c3e50;
+  border: none;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.login-button:hover {
+  background: #34495e;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(44, 62, 80, 0.2);
+}
+
+.login-button:active {
+  transform: translateY(0);
 }
 
 .login-tip {
-  margin-top: 24px;
+  margin-top: 28px;
   text-align: center;
+  padding-top: 20px;
+  border-top: 1px solid #e4e7ed;
+}
+
+.login-tip :deep(.el-text) {
+  color: #7f8c8d;
+  font-size: 13px;
 }
 
 /* 响应式设计 */
 @media (max-width: 480px) {
   .login-card {
-    padding: 24px;
+    padding: 32px 24px;
   }
 
   .login-title {
     font-size: 20px;
+  }
+
+  .logo-icon {
+    font-size: 40px;
   }
 }
 </style>

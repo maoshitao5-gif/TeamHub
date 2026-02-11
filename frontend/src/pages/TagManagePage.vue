@@ -178,23 +178,123 @@ onMounted(() => {
 .stats-card {
   margin-bottom: 24px;
   border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.stats-card :deep(.el-card__header) {
+  background: #ffffff;
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+}
+
+.stats-card :deep(.el-card__body) {
+  padding: 20px;
 }
 
 .tags-list-card {
   border-radius: 8px;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.tags-list-card :deep(.el-card__header) {
+  background: #ffffff;
+  border-bottom: 1px solid #e4e7ed;
+  padding: 16px 20px;
+}
+
+.tags-list-card :deep(.el-card__body) {
+  padding: 20px;
 }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 16px;
   font-weight: 600;
-  color: #409EFF;
+  color: #2c3e50;
+}
+
+.card-header .el-icon {
+  color: #2c3e50;
+  font-size: 18px;
 }
 
 .stats-overview {
   padding: 20px 0;
+}
+
+.stats-overview :deep(.el-statistic__head) {
+  color: #7f8c8d;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.stats-overview :deep(.el-statistic__number) {
+  color: #2c3e50;
+  font-weight: 600;
+}
+
+.stats-overview :deep(.el-statistic__suffix) {
+  color: #7f8c8d;
+  margin-left: 4px;
+}
+
+/* 表格样式优化 */
+:deep(.el-table) {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+:deep(.el-table th) {
+  background: #f8f9fa;
+  color: #2c3e50;
+  font-weight: 600;
+  border-bottom: 2px solid #e4e7ed;
+}
+
+:deep(.el-table td) {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
+  background: #fafbfc;
+}
+
+/* 按钮样式优化 */
+:deep(.el-button) {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+:deep(.el-button--primary) {
+  background: #1e88e5;
+  border-color: #1e88e5;
+}
+
+:deep(.el-button--primary:hover) {
+  background: #1565c0;
+  border-color: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(30, 136, 229, 0.2);
+}
+
+:deep(.el-button--danger) {
+  background: #c62828;
+  border-color: #c62828;
+}
+
+:deep(.el-button--danger:hover) {
+  background: #b71c1c;
+  border-color: #b71c1c;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(198, 40, 40, 0.2);
 }
 
 .file-list {
