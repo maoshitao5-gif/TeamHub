@@ -12,7 +12,7 @@ import request from './request'
 export function uploadFile(formData, onUploadProgress) {
   return request.post('/upload', formData, {
     headers: {
-      'Content-Type': 'multipart/form-data'
+      'Content-Type': 'multipart/form-data; charset=utf-8'
     },
     onUploadProgress: onUploadProgress ? (progressEvent) => {
       // 确保进度事件正确传递
@@ -32,7 +32,7 @@ export function uploadFile(formData, onUploadProgress) {
 export function uploadFolder(formData, onUploadProgress) {
   return request.post('/upload-folder', formData, {
     headers: {
-      'Content-Type': 'multipart/form-data'
+      'Content-Type': 'multipart/form-data; charset=utf-8'
     },
     onUploadProgress: onUploadProgress ? (progressEvent) => {
       // 确保进度事件正确传递

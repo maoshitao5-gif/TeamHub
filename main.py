@@ -3,6 +3,7 @@ FastAPI 应用主入口
 提供文件上传、标签管理和文件搜索等核心功能
 """
 import os
+import sys
 import hashlib
 import shutil
 import urllib.parse
@@ -12,6 +13,37 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime, timedelta
+
+# ========== 全局 UTF-8 编码配置 ==========
+# 强制设置标准输出、标准错误和标准输入使用 UTF-8 编码
+# 这对于 Windows 系统特别重要，因为默认编码可能是 GBK
+if sys.platform == 'win32':
+    # Windows 系统：设置控制台编码为 UTF-8
+    try:
+        # 设置环境变量
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        # 尝试设置控制台编码（如果支持）
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stdin, 'reconfigure'):
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        # 如果设置失败，继续执行（某些环境可能不支持）
+        pass
+
+# 设置默认编码为 UTF-8（Python 3.7+）
+import locale
+try:
+    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+    except locale.Error:
+        # 如果都失败，使用系统默认
+        pass
+# ========== 全局 UTF-8 编码配置结束 ==========
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, Path as PathParam, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -185,17 +217,17 @@ async def lifespan(app: FastAPI):
             )
             db.add(default_user)
             db.commit()
-            print("✓ 已创建默认超级管理员用户: admin / admin123")
+            safe_print("[OK] 已创建默认超级管理员用户: admin / admin123")
         else:
             # 如果admin用户已存在但is_admin为False，更新为True
             if not default_user.is_admin:
                 default_user.is_admin = True
                 db.commit()
-                print("✓ 已将admin用户升级为超级管理员")
+                safe_print("[OK] 已将admin用户升级为超级管理员")
             else:
-                print("✓ 默认超级管理员用户已存在")
+                safe_print("[OK] 默认超级管理员用户已存在")
     except Exception as e:
-        print(f"初始化默认用户失败: {e}")
+        safe_print(f"初始化默认用户失败: {safe_str(e)}")
         db.rollback()
     finally:
         db.close()
@@ -211,6 +243,22 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# 添加全局中间件，确保所有响应都使用 UTF-8 编码
+@app.middleware("http")
+async def add_utf8_header(request: Request, call_next):
+    """确保所有响应都包含 UTF-8 编码头"""
+    response = await call_next(request)
+    # 确保 Content-Type 包含 charset=utf-8（对于文本响应）
+    if "content-type" in response.headers:
+        content_type = response.headers["content-type"]
+        if "application/json" in content_type and "charset" not in content_type:
+            response.headers["content-type"] = content_type.replace(
+                "application/json", "application/json; charset=utf-8"
+            )
+        elif "text/" in content_type and "charset" not in content_type:
+            response.headers["content-type"] = content_type + "; charset=utf-8"
+    return response
 
 # 配置 CORS，允许前端跨域访问
 # 开发环境：允许所有 localhost 和 127.0.0.1 的端口
@@ -305,10 +353,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def general_exception_handler(request: Request, exc: Exception):
     """处理所有未捕获的异常，确保包含 CORS 头"""
     import traceback
-    error_detail = str(exc)
+    error_detail = safe_str(exc)
     error_traceback = traceback.format_exc()
-    print(f"未捕获的异常: {error_detail}")
-    print(f"错误堆栈: {error_traceback}")
+    safe_print(f"未捕获的异常: {error_detail}")
+    safe_print(f"错误堆栈: {error_traceback}")
     
     # 获取允许的 origin
     origin = request.headers.get("origin")
@@ -348,6 +396,62 @@ async def general_exception_handler(request: Request, exc: Exception):
 # 文件存储目录
 STORAGE_DIR = Path("storage")
 STORAGE_DIR.mkdir(exist_ok=True)  # 如果目录不存在则创建
+
+
+def safe_str(obj) -> str:
+    """
+    安全地将对象转换为字符串，处理 Unicode 编码错误
+    在 Windows GBK 环境下，某些 Unicode 字符无法编码，需要特殊处理
+    """
+    try:
+        s = str(obj)
+        # 首先尝试编码为 GBK（Windows 默认编码），如果失败则使用 ASCII 安全版本
+        try:
+            s.encode('gbk')
+            return s
+        except UnicodeEncodeError:
+            # 如果 GBK 编码失败，使用 ASCII 安全版本（替换无法编码的字符）
+            return s.encode('ascii', 'replace').decode('ascii')
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        # 如果转换失败，使用 ASCII 安全版本
+        try:
+            return str(obj).encode('ascii', 'replace').decode('ascii')
+        except:
+            return repr(obj)
+
+
+def safe_print(*args, **kwargs):
+    """
+    安全的 print 函数，处理 Windows GBK 编码环境下的 Unicode 字符
+    """
+    try:
+        # 将所有参数转换为安全的字符串
+        safe_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                # 对于字符串，先尝试安全转换
+                safe_arg = safe_str(arg)
+                # 确保可以编码为GBK（Windows默认编码）
+                try:
+                    safe_arg.encode('gbk')
+                    safe_args.append(safe_arg)
+                except UnicodeEncodeError:
+                    # 如果GBK编码失败，使用ASCII安全版本
+                    safe_args.append(safe_arg.encode('ascii', 'replace').decode('ascii'))
+            else:
+                safe_args.append(arg)
+        print(*safe_args, **kwargs)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        # 如果仍然失败，使用 repr 输出
+        try:
+            safe_args = [repr(arg) for arg in args]
+            print(*safe_args, **kwargs)
+        except:
+            # 最后的备选方案：输出错误信息
+            try:
+                print(f"[编码错误] 无法输出内容: {type(e).__name__}")
+            except:
+                pass  # 如果连这个都失败，就静默失败
 
 
 def calculate_sha256(file_path: str) -> str:
@@ -401,7 +505,7 @@ def calculate_folder_content_hash(zip_path: str) -> str:
                 # 计算每个文件内容的哈希值
                 file_hash = calculate_sha256(str(file_path))
                 file_hashes.append(file_hash)
-                print(f"[内容查重] 文件: {file_path.relative_to(temp_dir_path)} -> 哈希: {file_hash[:16]}...")
+                safe_print(f"[内容查重] 文件: {file_path.relative_to(temp_dir_path)} -> 哈希: {file_hash[:16]}...")
         
         if not file_hashes:
             raise ValueError("ZIP 文件中没有文件")
@@ -491,11 +595,13 @@ async def upload_file(
     try:
         # 创建临时文件路径用于计算哈希值
         # 使用时间戳和随机数确保临时文件名唯一，避免并发冲突
-        temp_filename = f"temp_{int(time.time())}_{random.randint(1000, 9999)}_{file.filename}"
+        # 使用安全的文件名，避免特殊字符导致编码错误
+        safe_filename = safe_str(file.filename)
+        temp_filename = f"temp_{int(time.time())}_{random.randint(1000, 9999)}_{safe_filename}"
         temp_file_path = STORAGE_DIR / temp_filename
         
-        print(f"[上传] 开始接收文件: {file.filename}")
-        print(f"[上传] 临时文件路径: {temp_file_path}")
+        safe_print(f"[上传] 开始接收文件: {file.filename}")
+        safe_print(f"[上传] 临时文件路径: {temp_file_path}")
         
         # 保存上传的文件到临时位置
         with open(temp_file_path, "wb") as buffer:
@@ -503,7 +609,7 @@ async def upload_file(
         
         # 检查文件大小，禁止上传0字节的空文件
         file_size = temp_file_path.stat().st_size
-        print(f"[上传] 文件保存完成，大小: {file_size} bytes")
+        safe_print(f"[上传] 文件保存完成，大小: {file_size} bytes")
         
         if file_size == 0:
             # 删除临时文件
@@ -515,10 +621,10 @@ async def upload_file(
         
         # 计算文件的 SHA-256 哈希值
         print(f"[查重] ========== 开始查重流程 ==========")
-        print(f"[查重] 文件名: {file.filename}")
+        safe_print(f"[查重] 文件名: {file.filename}")
         print(f"[查重] 文件大小: {file_size} bytes")
         print(f"[查重] 是否为文件夹压缩包: {is_folder_archive}")
-        print(f"[查重] 文件夹名称: {folder_name}")
+        safe_print(f"[查重] 文件夹名称: {folder_name}")
         
         # 如果是文件夹压缩包，使用内容哈希（基于文件夹内所有文件的内容）
         # 这样可以检测到相同内容但不同文件夹名称的重复
@@ -531,7 +637,7 @@ async def upload_file(
                 print(f"[查重] 哈希值前16位: {sha256_hash[:16]}...")
                 print(f"[查重] 哈希值后16位: ...{sha256_hash[-16:]}")
             except Exception as e:
-                print(f"[查重] 计算内容哈希失败: {e}")
+                safe_print(f"[查重] 计算内容哈希失败: {safe_str(e)}")
                 # 如果计算内容哈希失败，回退到 ZIP 文件哈希
                 print(f"[查重] 回退到 ZIP 文件哈希...")
                 sha256_hash = calculate_sha256(str(temp_file_path))
@@ -554,15 +660,15 @@ async def upload_file(
         if len(all_files) > 0:
             print(f"[查重] 数据库中已有文件的哈希值:")
             for f in all_files[:10]:  # 只显示前10个
-                print(f"  - 文件ID {f.id}: {f.sha256_hash[:16]}... (文件名: {f.original_filename})")
+                safe_print(f"  - 文件ID {f.id}: {f.sha256_hash[:16]}... (文件名: {f.original_filename})")
         
         existing_file = db.query(File).filter(File.sha256_hash == sha256_hash).first()
         print(f"[查重] 查询结果: {'找到重复文件' if existing_file else '未找到重复文件'}")
         
         if existing_file:
-            print(f"[查重] ⚠️ 检测到重复文件！")
+            print(f"[查重] [WARNING] 检测到重复文件！")
             print(f"[查重] 已存在文件ID: {existing_file.id}")
-            print(f"[查重] 已存在文件名: {existing_file.original_filename}")
+            safe_print(f"[查重] 已存在文件名: {existing_file.original_filename}")
             print(f"[查重] 已存在文件大小: {existing_file.file_size} bytes")
             print(f"[查重] 已存在文件哈希: {existing_file.sha256_hash}")
             print(f"[查重] 已存在文件上传时间: {existing_file.upload_time}")
@@ -572,7 +678,7 @@ async def upload_file(
                 os.remove(temp_file_path)
                 print(f"[查重] 临时文件已删除")
             except Exception as e:
-                print(f"[查重] 删除临时文件失败: {e}")
+                safe_print(f"[查重] 删除临时文件失败: {safe_str(e)}")
             
             # 返回详细的文件信息，方便前端展示
             error_detail = {
@@ -594,12 +700,13 @@ async def upload_file(
                 detail=error_detail
             )
         
-        print(f"[查重] ✓ 未检测到重复文件，继续上传流程...")
+        safe_print(f"[查重] [OK] 未检测到重复文件，继续上传流程...")
         print(f"[查重] ========== 查重流程结束（无重复） ==========")
         
         # 生成存储路径：使用哈希值的前8位 + 原始文件名，避免文件名冲突
-        file_extension = Path(file.filename).suffix
-        storage_filename = f"{sha256_hash[:8]}_{file.filename}"
+        # 使用安全的文件名，避免特殊字符导致编码错误
+        file_extension = Path(safe_filename).suffix
+        storage_filename = f"{sha256_hash[:8]}_{safe_filename}"
         storage_path = STORAGE_DIR / storage_filename
         
         # 将临时文件移动到最终存储位置
@@ -656,7 +763,9 @@ async def upload_file(
         # 清理临时文件（如果存在）
         if temp_file_path.exists():
             os.remove(temp_file_path)
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+        # 使用安全字符串转换，避免 GBK 编码错误
+        error_msg = safe_str(e)
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {error_msg}")
 
 
 @app.post("/upload-folder")
@@ -1098,7 +1207,7 @@ def _download_file_helper(file_id: int, db: Session, request: Request = None):
                 if ord(char) > 127:
                     raise ValueError(f"位置 {i} 的字符 {repr(char)} (Unicode {ord(char)}) 不是 ASCII")
         except (UnicodeEncodeError, ValueError) as e:
-            print(f"[警告] URL 编码结果包含非 ASCII 字符，使用 base64 编码: {e}")
+            safe_print(f"[警告] URL 编码结果包含非 ASCII 字符，使用 base64 编码: {safe_str(e)}")
             import base64
             # 使用 base64 编码作为备选方案
             encoded_original_name = base64.b64encode(original_filename.encode('utf-8')).decode('ascii')
@@ -1167,7 +1276,7 @@ def _download_file_helper(file_id: int, db: Session, request: Request = None):
                     final_headers[key] = value.encode('ascii', 'ignore').decode('ascii')
                 print(f"[警告] 已将 {key} 替换为 base64/ASCII 安全版本")
         
-        print(f"[下载成功] 正在发送文件: {original_filename} (hash: {file_record.sha256_hash})")
+        safe_print(f"[下载成功] 正在发送文件: {original_filename} (hash: {file_record.sha256_hash})")
         
         return FileResponse(
             path=str(file_path),
@@ -1178,10 +1287,11 @@ def _download_file_helper(file_id: int, db: Session, request: Request = None):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"_download_file_helper 发生错误: {str(e)}")
-        print(traceback.format_exc())
+        safe_print(f"_download_file_helper 发生错误: {safe_str(e)}")
+        safe_print(traceback.format_exc())
         # 即使报错也要确保返回前端能识别的错误格式
-        raise HTTPException(status_code=500, detail=f"下载文件失败: {str(e)}")
+        error_msg = safe_str(e)
+        raise HTTPException(status_code=500, detail=f"下载文件失败: {error_msg}")
 
 
 @app.get("/files/{file_id}/download")
@@ -1306,7 +1416,7 @@ async def delete_file(
         try:
             os.remove(file_path)
         except Exception as e:
-            print(f"删除文件失败: {e}")
+            safe_print(f"删除文件失败: {safe_str(e)}")
     
     # 删除数据库记录（关联的标签关系会自动删除）
     db.delete(file_record)
@@ -1543,7 +1653,7 @@ async def admin_batch_delete_files(
             try:
                 os.remove(file_path)
             except Exception as e:
-                print(f"删除文件失败: {e}")
+                safe_print(f"删除文件失败: {safe_str(e)}")
         
         # 删除数据库记录
         db.delete(file_record)

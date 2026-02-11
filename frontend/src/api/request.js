@@ -9,6 +9,10 @@ import { ElMessage } from 'element-plus'
 const request = axios.create({
   baseURL: 'http://127.0.0.1:8001',  // 直接调用后端，统一 BaseURL
   timeout: 30000,   // 30秒超时
+  // 确保请求和响应都使用 UTF-8 编码
+  headers: {
+    'Content-Type': 'application/json; charset=utf-8'
+  }
 })
 
 // 请求拦截器
