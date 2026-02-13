@@ -18,11 +18,7 @@ const request = axios.create({
 // 请求拦截器
 request.interceptors.request.use(
   (config) => {
-    // 添加认证 token 到请求头
-    const token = localStorage.getItem('access_token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
+    // 不再需要认证 token
     return config
   },
   (error) => {
@@ -140,19 +136,9 @@ request.interceptors.response.use(
     const status = error.response?.status
     let message = '请求失败'
     
-    // 处理 401 未授权错误（token 过期或无效）
+    // 处理 401 未授权错误（不再需要跳转到登录页）
     if (status === 401) {
-      // 清除本地 token
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('username')
-      
-      // 如果不在登录页，跳转到登录页
-      if (window.location.pathname !== '/login') {
-        ElMessage.error('登录已过期，请重新登录')
-        window.location.href = '/login'
-      }
-      
-      message = error.response?.data?.detail || '登录已过期，请重新登录'
+      message = error.response?.data?.detail || '未授权访问'
       const enhancedError = new Error(message)
       enhancedError.response = error.response
       enhancedError.config = error.config

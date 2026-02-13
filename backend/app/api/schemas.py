@@ -2,6 +2,7 @@
 API 请求和响应模型（Pydantic Schemas）
 """
 from typing import List, Optional
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -77,3 +78,33 @@ class ResetPasswordRequest(BaseModel):
 class BatchCreateUserRequest(BaseModel):
     """批量创建用户请求模型"""
     users: List[CreateUserRequest]
+
+
+class CreateStorageLocationRequest(BaseModel):
+    """创建存储位置请求模型"""
+    name: str
+    path: str  # 绝对路径
+    enabled: bool = True
+
+
+class UpdateStorageLocationRequest(BaseModel):
+    """更新存储位置请求模型"""
+    name: Optional[str] = None
+    path: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class StorageLocationResponse(BaseModel):
+    """存储位置响应模型"""
+    id: int
+    name: str
+    path: str
+    enabled: bool
+    is_default: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }

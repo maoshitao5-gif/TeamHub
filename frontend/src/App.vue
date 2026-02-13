@@ -28,30 +28,7 @@
               <el-icon><PriceTag /></el-icon>
               <span>标签管理</span>
             </el-menu-item>
-            <el-menu-item v-if="isAdminUser" index="/admin">
-              <el-icon><Setting /></el-icon>
-              <span>管理后台</span>
-            </el-menu-item>
           </el-menu>
-        </div>
-        
-        <!-- 用户信息 -->
-        <div class="user-section">
-          <el-dropdown @command="handleUserCommand">
-            <span class="user-info">
-              <el-icon><User /></el-icon>
-              <span>{{ username || '用户' }}</span>
-              <el-icon class="dropdown-icon"><ArrowDown /></el-icon>
-            </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="logout">
-                  <el-icon><SwitchButton /></el-icon>
-                  退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
         </div>
       </div>
     </el-header>
@@ -66,19 +43,12 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened, Document, Upload, PriceTag, User, ArrowDown, SwitchButton, Setting } from '@element-plus/icons-vue'
-import { getUsername, logout, isAdmin } from '@/api/auth'
+import { FolderOpened, Document, Upload, PriceTag } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
-
-// 用户名
-const username = ref('')
-// 是否为管理员
-const isAdminUser = ref(false)
 
 // 计算当前激活的菜单项
 const activeMenu = computed(() => {
@@ -89,33 +59,6 @@ const activeMenu = computed(() => {
 const handleMenuSelect = (index) => {
   router.push(index)
 }
-
-// 处理用户下拉菜单命令
-const handleUserCommand = (command) => {
-  if (command === 'logout') {
-    ElMessageBox.confirm(
-      '确定要退出登录吗？',
-      '确认退出',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning',
-      }
-    ).then(() => {
-      logout()
-      ElMessage.success('已退出登录')
-      router.push('/login')
-    }).catch(() => {
-      // 用户取消
-    })
-  }
-}
-
-// 加载用户信息
-onMounted(() => {
-  username.value = getUsername() || ''
-  isAdminUser.value = isAdmin()
-})
 </script>
 
 <style>
@@ -227,6 +170,25 @@ body {
 .header-menu {
   background: transparent;
   border-bottom: none;
+}
+
+/* 确保所有菜单项都能直接显示，防止被折叠 */
+.header-menu :deep(.el-menu--horizontal) {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.header-menu :deep(.el-menu-item) {
+  display: inline-flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* 确保第三个菜单项（标签管理）也能显示 */
+.header-menu :deep(.el-menu-item:nth-child(3)) {
+  display: inline-flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 
 .header-menu .el-menu-item {

@@ -92,7 +92,8 @@
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Select, PriceTag, Download, Delete, Close } from '@element-plus/icons-vue'
-import { batchUpdateTags, batchDownload, deleteFile, getTags } from '@/api/file'
+import { batchUpdateTags, batchDownload, getTags } from '@/api/file'
+import { batchDeleteFiles } from '@/api/admin'
 
 const props = defineProps({
   selectedFiles: {
@@ -231,9 +232,9 @@ const handleBatchDelete = async () => {
       }
     )
     
-    // 逐个删除文件
-    const deletePromises = props.selectedFiles.map(file => deleteFile(file.id))
-    await Promise.all(deletePromises)
+    // 批量删除文件
+    const fileIds = props.selectedFiles.map(f => f.id)
+    await batchDeleteFiles(fileIds)
     
     ElMessage.success(`成功删除 ${props.selectedFiles.length} 个文件`)
     emit('refresh')

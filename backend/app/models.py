@@ -7,6 +7,24 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.app.database import Base
 
+# ========== 存储位置（多目录）==========
+class StorageLocation(Base):
+    """
+    存储位置表模型
+    用于配置多个本地存储目录，并允许设置默认存储位置
+    """
+    __tablename__ = "storage_locations"
+
+    id = Column(Integer, primary_key=True, index=True, comment="存储位置ID")
+    name = Column(String(100), nullable=False, unique=True, index=True, comment="存储位置名称")
+    path = Column(String(1000), nullable=False, unique=True, comment="本地存储路径（绝对路径）")
+    enabled = Column(Boolean, default=True, nullable=False, comment="是否启用")
+    is_default = Column(Boolean, default=False, nullable=False, comment="是否默认")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="创建时间")
+    
+    # 关联的文件
+    files = relationship("File", back_populates="storage_location")
+
 # FileTag 中间表，用于实现文件与标签的多对多关系
 file_tag_association = Table(
     'file_tag',
@@ -29,8 +47,11 @@ class File(Base):
     # 原始文件名（用户上传时的文件名）
     original_filename = Column(String(255), nullable=False, comment="原始文件名")
 
-    # 文件在服务器上的存储路径（相对于 storage/ 目录）
-    storage_path = Column(String(500), nullable=False, unique=True, comment="存储路径")
+    # 文件在服务器上的存储路径（绝对路径）
+    storage_path = Column(String(500), nullable=False, unique=True, comment="存储路径（绝对路径）")
+    
+    # 关联的存储位置ID（允许NULL以兼容旧数据）
+    storage_location_id = Column(Integer, ForeignKey('storage_locations.id'), nullable=True, comment="存储位置ID")
 
     # SHA-256 哈希值，用于文件查重
     sha256_hash = Column(String(64), nullable=False, unique=True, index=True, comment="SHA-256哈希值")
@@ -46,6 +67,9 @@ class File(Base):
 
     # 多对多关系：一个文件可以有多个标签
     tags = relationship("Tag", secondary=file_tag_association, back_populates="files")
+    
+    # 关联的存储位置
+    storage_location = relationship("StorageLocation", back_populates="files")
 
 
 class Tag(Base):

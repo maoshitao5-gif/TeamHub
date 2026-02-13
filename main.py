@@ -25,7 +25,6 @@ from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, Pat
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.exceptions import RequestValidationError
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -36,27 +35,18 @@ import traceback
 
 # 使用模块化的数据库和模型
 from backend.app.database import get_db, init_db
-from backend.app.models import File, Tag, file_tag_association, User
+from backend.app.models import File, Tag, file_tag_association
 
-# 使用模块化的配置和安全模块
-from backend.app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, STORAGE_DIR
-from backend.app.core.security import (
-    verify_password, get_password_hash, create_access_token, verify_token
-)
+# 使用模块化的配置
+from backend.app.config import STORAGE_DIR
 from backend.app.core.file_utils import calculate_sha256, calculate_folder_content_hash
 from backend.app.services.tag_service import get_or_create_tag
 
-# HTTP Bearer Token 安全方案
-security = HTTPBearer()
-
-
-# 使用模块化的API模型和依赖
+# 使用模块化的API模型
 from backend.app.api.schemas import (
-    SearchRequest, LoginRequest, Token, CreateUserRequest, UpdateUserRequest,
-    CreateTagRequest, UpdateTagRequest, BatchDeleteRequest, BatchDownloadRequest,
-    UpdateFileTagsRequest, BatchUpdateTagsRequest, ResetPasswordRequest, BatchCreateUserRequest
+    SearchRequest, CreateTagRequest, UpdateTagRequest, BatchDeleteRequest, BatchDownloadRequest,
+    UpdateFileTagsRequest, BatchUpdateTagsRequest
 )
-from backend.app.api.deps import get_current_user, get_admin_user
 
 
 @asynccontextmanager
@@ -68,37 +58,6 @@ async def lifespan(app: FastAPI):
     # 启动时执行
     init_db()
     print("数据库初始化完成")
-    
-    # 初始化默认管理员用户（如果不存在）
-    from backend.app.config import DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
-    db = next(get_db())
-    try:
-        default_user = db.query(User).filter(User.username == DEFAULT_ADMIN_USERNAME).first()
-        if not default_user:
-            # 创建默认超级管理员用户
-            default_password_hash = get_password_hash(DEFAULT_ADMIN_PASSWORD)
-            default_user = User(
-                username=DEFAULT_ADMIN_USERNAME,
-                hashed_password=default_password_hash,
-                created_at=datetime.utcnow(),
-                is_admin=True
-            )
-            db.add(default_user)
-            db.commit()
-            safe_print(f"[OK] 已创建默认超级管理员用户: {DEFAULT_ADMIN_USERNAME} / {DEFAULT_ADMIN_PASSWORD}")
-        else:
-            # 如果admin用户已存在但is_admin为False，更新为True
-            if not default_user.is_admin:
-                default_user.is_admin = True
-                db.commit()
-                safe_print("[OK] 已将admin用户升级为超级管理员")
-            else:
-                safe_print("[OK] 默认超级管理员用户已存在")
-    except Exception as e:
-        safe_print(f"初始化默认用户失败: {safe_str(e)}")
-        db.rollback()
-    finally:
-        db.close()
     
     yield
     # 关闭时执行（如果需要清理操作，可以在这里添加）
@@ -138,10 +97,55 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
+# 注册模块化API路由
+from backend.app.api.router import api_router
+app.include_router(api_router)
+
 # 文件存储目录已在config模块中定义
 # STORAGE_DIR 已从 backend.app.config 导入
 # 确保目录存在
 STORAGE_DIR.mkdir(exist_ok=True)
+
+
+def resolve_file_path(file_record: File, db: Session) -> Path:
+    """
+    解析文件路径的辅助函数
+    支持多存储位置和旧数据兼容
+    
+    Args:
+        file_record: 文件记录对象
+        db: 数据库会话
+        
+    Returns:
+        解析后的文件路径（Path对象）
+    """
+    storage_path_str = file_record.storage_path
+    file_path = Path(storage_path_str)
+    
+    # 如果已经是绝对路径且存在，直接返回
+    if file_path.is_absolute() and file_path.exists():
+        return file_path
+    
+    # 优先使用关联的存储位置
+    if file_record.storage_location_id:
+        from backend.app.models import StorageLocation
+        storage_location = db.query(StorageLocation).filter(
+            StorageLocation.id == file_record.storage_location_id
+        ).first()
+        if storage_location:
+            # 如果是相对路径，尝试在存储位置下查找
+            if not file_path.is_absolute():
+                file_path = Path(storage_location.path) / Path(storage_path_str).name
+            else:
+                file_path = Path(storage_path_str)
+            if file_path.exists():
+                return file_path
+    
+    # 兼容旧数据：使用默认存储位置
+    if not file_path.is_absolute():
+        file_path = STORAGE_DIR / Path(storage_path_str).name
+    
+    return file_path
 
 
 # 以下工具函数已迁移到模块化结构中，保留作为向后兼容
@@ -229,8 +233,8 @@ async def upload_file(
     tags: List[str] = Form(),
     is_folder_archive: Optional[str] = Form(None),  # 标识是否为文件夹压缩包
     folder_name: Optional[str] = Form(None),  # 文件夹名称
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+    storage_location_id: Optional[int] = Form(None),  # 存储位置ID
+    db: Session = Depends(get_db)
 ):
     """
     文件上传接口
@@ -247,6 +251,7 @@ async def upload_file(
         tags: 标签列表（字符串数组）
         is_folder_archive: 是否为文件夹压缩包（'true' 表示是）
         folder_name: 文件夹名称（当 is_folder_archive 为 'true' 时使用）
+        storage_location_id: 存储位置ID（可选，不提供则使用默认存储位置）
         db: 数据库会话（依赖注入）
         
     Returns:
@@ -366,14 +371,45 @@ async def upload_file(
         safe_print(f"[查重] [OK] 未检测到重复文件，继续上传流程...")
         print(f"[查重] ========== 查重流程结束（无重复） ==========")
         
+        # 获取存储位置
+        from backend.app.models import StorageLocation
+        if storage_location_id:
+            storage_location = db.query(StorageLocation).filter(
+                StorageLocation.id == storage_location_id,
+                StorageLocation.enabled == True
+            ).first()
+            if not storage_location:
+                os.remove(temp_file_path)
+                raise HTTPException(
+                    status_code=400,
+                    detail="指定的存储位置不存在或已禁用"
+                )
+        else:
+            # 使用默认存储位置
+            storage_location = db.query(StorageLocation).filter(
+                StorageLocation.is_default == True,
+                StorageLocation.enabled == True
+            ).first()
+            if not storage_location:
+                os.remove(temp_file_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail="未找到可用的默认存储位置"
+                )
+        
         # 生成存储路径：使用哈希值的前8位 + 原始文件名，避免文件名冲突
         # 使用安全的文件名，避免特殊字符导致编码错误
         file_extension = Path(safe_filename).suffix
         storage_filename = f"{sha256_hash[:8]}_{safe_filename}"
-        storage_path = STORAGE_DIR / storage_filename
+        storage_dir = Path(storage_location.path)
+        storage_path = storage_dir / storage_filename
         
-        # 将临时文件移动到最终存储位置
-        shutil.move(str(temp_file_path), str(storage_path))
+        # 确保存储目录存在
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 将临时文件移动到最终存储位置（使用绝对路径）
+        final_storage_path = storage_path.resolve()
+        shutil.move(str(temp_file_path), str(final_storage_path))
         
         # 文件大小已在之前检查时获取，直接使用
         
@@ -385,11 +421,12 @@ async def upload_file(
         
         db_file = File(
             original_filename=file.filename,
-            storage_path=str(storage_path),
+            storage_path=str(final_storage_path),  # 存储绝对路径
             sha256_hash=sha256_hash,
             file_size=file_size,
             upload_time=datetime.utcnow(),
-            relative_path=relative_path_value
+            relative_path=relative_path_value,
+            storage_location_id=storage_location.id
         )
         db.add(db_file)
         db.flush()  # 刷新以获取文件ID
@@ -463,6 +500,8 @@ async def upload_folder(
         files = form.getlist('files')
         relative_paths = form.getlist('relative_paths')
         tags = form.getlist('tags')
+        storage_location_id_str = form.get('storage_location_id')
+        storage_location_id = int(storage_location_id_str) if storage_location_id_str else None
         
         # 过滤出有效的文件对象
         files = [f for f in files if hasattr(f, 'file')]
@@ -478,6 +517,33 @@ async def upload_folder(
                 status_code=400,
                 detail="文件列表不能为空"
             )
+        
+        # 获取存储位置
+        from backend.app.models import StorageLocation
+        if storage_location_id:
+            storage_location = db.query(StorageLocation).filter(
+                StorageLocation.id == storage_location_id,
+                StorageLocation.enabled == True
+            ).first()
+            if not storage_location:
+                raise HTTPException(
+                    status_code=400,
+                    detail="指定的存储位置不存在或已禁用"
+                )
+        else:
+            # 使用默认存储位置
+            storage_location = db.query(StorageLocation).filter(
+                StorageLocation.is_default == True,
+                StorageLocation.enabled == True
+            ).first()
+            if not storage_location:
+                raise HTTPException(
+                    status_code=500,
+                    detail="未找到可用的默认存储位置"
+                )
+        
+        storage_dir = Path(storage_location.path)
+        storage_dir.mkdir(parents=True, exist_ok=True)
         
         uploaded_files = []
         failed_files = []
@@ -519,39 +585,41 @@ async def upload_folder(
                     continue
                 
                 # 生成存储路径：使用哈希值的前8位 + 原始文件名，避免文件名冲突
-                # 如果 relative_path 不为空，在 storage 目录下创建对应的文件夹结构
+                # 如果 relative_path 不为空，在存储目录下创建对应的文件夹结构
                 if relative_path and relative_path.strip():
                     # 规范化相对路径（去除开头的 / 或 \）
                     normalized_path = relative_path.strip().lstrip('/\\')
                     # 获取文件的目录部分（去除文件名）
                     path_obj = Path(normalized_path)
                     if path_obj.parent and path_obj.parent != Path('.'):
-                        # 创建文件夹结构（相对于 storage 目录）
-                        folder_path = STORAGE_DIR / path_obj.parent
+                        # 创建文件夹结构（相对于存储位置目录）
+                        folder_path = storage_dir / path_obj.parent
                         folder_path.mkdir(parents=True, exist_ok=True)
                         # 存储文件名使用哈希值前缀 + 原始文件名
                         storage_filename = f"{sha256_hash[:8]}_{path_obj.name}"
                         storage_path = folder_path / storage_filename
                     else:
-                        # 文件在根目录，直接存储在 storage 根目录
+                        # 文件在根目录，直接存储在存储位置根目录
                         storage_filename = f"{sha256_hash[:8]}_{path_obj.name}"
-                        storage_path = STORAGE_DIR / storage_filename
+                        storage_path = storage_dir / storage_filename
                 else:
-                    # 单文件上传模式，直接存储在 storage 根目录
+                    # 单文件上传模式，直接存储在存储位置根目录
                     storage_filename = f"{sha256_hash[:8]}_{file.filename}"
-                    storage_path = STORAGE_DIR / storage_filename
+                    storage_path = storage_dir / storage_filename
                 
-                # 将临时文件移动到最终存储位置
-                shutil.move(str(temp_file_path), str(storage_path))
+                # 将临时文件移动到最终存储位置（使用绝对路径）
+                final_storage_path = storage_path.resolve()
+                shutil.move(str(temp_file_path), str(final_storage_path))
                 
                 # 创建文件记录
                 db_file = File(
                     original_filename=file.filename,
-                    storage_path=str(storage_path),
+                    storage_path=str(final_storage_path),  # 存储绝对路径
                     sha256_hash=sha256_hash,
                     file_size=file_size,
                     upload_time=datetime.utcnow(),
-                    relative_path=relative_path if relative_path and relative_path.strip() else None
+                    relative_path=relative_path if relative_path and relative_path.strip() else None,
+                    storage_location_id=storage_location.id
                 )
                 db.add(db_file)
                 db.flush()  # 刷新以获取文件ID
@@ -602,8 +670,7 @@ async def upload_folder(
 
 @app.get("/tags")
 async def get_tags(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+    db: Session = Depends(get_db)
 ):
     """
     获取所有标签接口（按使用频率排序）
@@ -639,75 +706,9 @@ async def get_tags(
     }
 
 
-@app.post("/login")
-async def login(
-    login_request: LoginRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    用户登录接口
-    
-    Args:
-        login_request: 登录请求，包含用户名和密码
-        db: 数据库会话
-        
-    Returns:
-        Token 信息，包含 access_token 和 token_type
-    """
-    # 查询用户
-    user = db.query(User).filter(User.username == login_request.username).first()
-    
-    # 验证用户名和密码
-    if not user or not verify_password(login_request.password, user.hashed_password):
-        raise HTTPException(
-            status_code=401,
-            detail="用户名或密码错误"
-        )
-    
-    # 更新最后登录时间
-    user.last_login = datetime.utcnow()
-    db.commit()
-    
-    # 创建访问令牌
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=access_token_expires
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "username": user.username
-    }
-
-
-@app.get("/auth/me")
-async def get_current_user_info(
-    current_user: User = Depends(get_current_user)
-):
-    """
-    获取当前登录用户信息
-    
-    Args:
-        current_user: 当前登录用户（通过认证依赖注入）
-        
-    Returns:
-        当前用户信息
-    """
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "is_admin": current_user.is_admin,
-        "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
-        "last_login": current_user.last_login.isoformat() if current_user.last_login else None
-    }
-
-
 @app.get("/tags/stats")
 async def get_tags_stats(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+    db: Session = Depends(get_db)
 ):
     """
     获取标签统计信息接口
@@ -752,11 +753,134 @@ async def get_tags_stats(
     }
 
 
+# ==================== 标签管理 API ====================
+
+@app.post("/tags")
+async def create_tag(
+    request: CreateTagRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    创建标签
+    """
+    tag_name = request.name.strip().lower()
+    if not tag_name:
+        raise HTTPException(status_code=400, detail="标签名称不能为空")
+    
+    # 检查标签是否已存在
+    existing_tag = db.query(Tag).filter(Tag.name == tag_name).first()
+    if existing_tag:
+        raise HTTPException(status_code=400, detail="标签已存在")
+    
+    tag = Tag(name=tag_name)
+    db.add(tag)
+    db.commit()
+    db.refresh(tag)
+    
+    return {
+        "id": tag.id,
+        "name": tag.name,
+        "message": "标签创建成功"
+    }
+
+
+@app.put("/tags/{tag_id}")
+async def update_tag(
+    tag_id: int,
+    request: UpdateTagRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    更新标签名称
+    """
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="标签不存在")
+    
+    new_name = request.name.strip().lower()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="标签名称不能为空")
+    
+    # 检查新名称是否已被其他标签使用
+    existing_tag = db.query(Tag).filter(Tag.name == new_name, Tag.id != tag_id).first()
+    if existing_tag:
+        raise HTTPException(status_code=400, detail="标签名称已被使用")
+    
+    tag.name = new_name
+    db.commit()
+    db.refresh(tag)
+    
+    return {
+        "id": tag.id,
+        "name": tag.name,
+        "message": "标签更新成功"
+    }
+
+
+@app.delete("/tags/{tag_id}")
+async def delete_tag(
+    tag_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    删除标签（会解除所有文件的关联）
+    """
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="标签不存在")
+    
+    # 获取关联的文件数量
+    file_count = len(tag.files) if tag.files else 0
+    
+    # 删除标签（会自动解除与文件的关联）
+    db.delete(tag)
+    db.commit()
+    
+    return {
+        "message": f"标签删除成功，已解除 {file_count} 个文件的关联",
+        "deleted_tag_id": tag_id,
+        "unlinked_files_count": file_count
+    }
+
+
+@app.post("/tags/batch-delete")
+async def batch_delete_tags(
+    request: BatchDeleteRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    批量删除标签
+    """
+    if not request.ids:
+        raise HTTPException(status_code=400, detail="标签ID列表不能为空")
+    
+    tags = db.query(Tag).filter(Tag.id.in_(request.ids)).all()
+    if not tags:
+        raise HTTPException(status_code=404, detail="未找到标签")
+    
+    deleted_count = 0
+    total_unlinked = 0
+    
+    for tag in tags:
+        file_count = len(tag.files) if tag.files else 0
+        total_unlinked += file_count
+        db.delete(tag)
+        deleted_count += 1
+    
+    db.commit()
+    
+    return {
+        "message": f"成功删除 {deleted_count} 个标签，已解除 {total_unlinked} 个文件的关联",
+        "deleted_count": deleted_count,
+        "unlinked_files_count": total_unlinked
+    }
+
+
 @app.post("/search")
 async def search_files(
     search_request: SearchRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     文件搜索接口
@@ -962,7 +1086,7 @@ async def download_file(
     request: Request,
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     下载文件接口（标准路径）
@@ -989,7 +1113,7 @@ async def download_file_short(
     request: Request,
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     下载文件接口（简短路径，兼容旧版本）
@@ -1015,7 +1139,7 @@ async def download_file_short(
 async def preview_file(
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     预览文件接口（用于图片和PDF）
@@ -1031,7 +1155,7 @@ async def preview_file(
     if not file_record:
         raise HTTPException(status_code=404, detail="文件不存在")
     
-    file_path = Path(file_record.storage_path)
+    file_path = resolve_file_path(file_record, db)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     
@@ -1057,7 +1181,7 @@ async def preview_file(
 async def reveal_file_in_explorer(
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     在**服务器所在机器**的文件管理器中定位（选中）该文件。
@@ -1071,13 +1195,7 @@ async def reveal_file_in_explorer(
     if not file_record:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    storage_path_str = file_record.storage_path
-    file_path = Path(storage_path_str)
-
-    # 兼容：如果 storage_path 不是绝对路径，则按 storage 目录兜底解析
-    if not file_path.is_absolute() and not file_path.exists():
-        file_path = STORAGE_DIR / Path(storage_path_str).name
-
+    file_path = resolve_file_path(file_record, db)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
 
@@ -1102,7 +1220,7 @@ async def reveal_file_in_explorer(
 async def open_file_with_default_app(
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     在**服务器所在机器**上使用系统默认程序直接打开文件。
@@ -1115,21 +1233,32 @@ async def open_file_with_default_app(
     if not file_record:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    storage_path_str = file_record.storage_path
-    file_path = Path(storage_path_str)
-
-    # 兼容：如果 storage_path 不是绝对路径，则按 storage 目录兜底解析
-    if not file_path.is_absolute() and not file_path.exists():
-        file_path = STORAGE_DIR / Path(storage_path_str).name
-
+    file_path = resolve_file_path(file_record, db)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_path}")
 
-    # 基础安全：只允许打开 storage 目录下文件
+    # 基础安全：只允许打开存储位置目录下文件
     try:
-        storage_root = STORAGE_DIR.resolve()
-        resolved = file_path.resolve()
-        if resolved != storage_root and storage_root not in resolved.parents:
+        # 检查文件是否在允许的存储位置下
+        allowed = False
+        if file_record.storage_location_id:
+            from backend.app.models import StorageLocation
+            storage_location = db.query(StorageLocation).filter(
+                StorageLocation.id == file_record.storage_location_id
+            ).first()
+            if storage_location:
+                storage_root = Path(storage_location.path).resolve()
+                resolved = file_path.resolve()
+                if resolved == storage_root or storage_root in resolved.parents:
+                    allowed = True
+        else:
+            # 兼容旧数据：检查是否在默认存储目录下
+            storage_root = STORAGE_DIR.resolve()
+            resolved = file_path.resolve()
+            if resolved == storage_root or storage_root in resolved.parents:
+                allowed = True
+        
+        if not allowed:
             raise HTTPException(status_code=403, detail="禁止打开非存储目录下的文件")
     except HTTPException:
         raise
@@ -1153,7 +1282,7 @@ async def open_file_with_default_app(
 async def delete_file(
     file_id: int = PathParam(..., description="文件ID"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     删除文件接口
@@ -1170,7 +1299,7 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="文件不存在")
     
     # 删除物理文件
-    file_path = Path(file_record.storage_path)
+    file_path = resolve_file_path(file_record, db)
     if file_path.exists():
         try:
             os.remove(file_path)
@@ -1194,7 +1323,7 @@ async def delete_file(
 async def batch_download(
     request: BatchDownloadRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     批量下载文件接口（打包成ZIP）
@@ -1241,7 +1370,7 @@ async def update_file_tags(
     file_id: int = PathParam(..., description="文件ID"),
     request: UpdateFileTagsRequest = ...,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+  # 需要登录
 ):
     """
     更新文件标签接口
@@ -1281,8 +1410,7 @@ async def update_file_tags(
 async def batch_update_tags(
     file_ids: List[int] = Form(...),
     tags: List[str] = Form(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)  # 需要登录
+    db: Session = Depends(get_db)
 ):
     """
     批量更新文件标签接口
@@ -1318,61 +1446,13 @@ async def batch_update_tags(
     }
 
 
-# ==================== 管理后台 API ====================
-
-# 所有请求模型已迁移到 backend.app.api.schemas
-# 已在文件开头导入：
-# - CreateUserRequest
-# - UpdateUserRequest
-# - CreateTagRequest
-# - UpdateTagRequest
-# - BatchDeleteRequest
-
-
-# ==================== 文件管理 API ====================
-
-@app.get("/admin/files")
-async def admin_get_all_files(
-    page: int = 1,
-    page_size: int = 50,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员获取所有文件列表（分页）
-    """
-    offset = (page - 1) * page_size
-    files = db.query(File).order_by(File.upload_time.desc()).offset(offset).limit(page_size).all()
-    total = db.query(File).count()
-    
-    return {
-        "files": [
-            {
-                "id": file.id,
-                "original_filename": file.original_filename,
-                "file_size": file.file_size,
-                "sha256_hash": file.sha256_hash,
-                "upload_time": file.upload_time.isoformat() if file.upload_time else None,
-                "relative_path": file.relative_path,
-                "tags": [tag.name for tag in file.tags]
-            }
-            for file in files
-        ],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size
-    }
-
-
-@app.post("/admin/files/batch-delete")
-async def admin_batch_delete_files(
+@app.post("/files/batch-delete")
+async def batch_delete_files(
     request: BatchDeleteRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
+    db: Session = Depends(get_db)
 ):
     """
-    管理员批量删除文件
+    批量删除文件
     """
     if not request.ids:
         raise HTTPException(status_code=400, detail="文件ID列表不能为空")
@@ -1384,7 +1464,7 @@ async def admin_batch_delete_files(
     deleted_count = 0
     for file_record in files:
         # 删除物理文件
-        file_path = Path(file_record.storage_path)
+        file_path = STORAGE_DIR / file_record.storage_path
         if file_path.exists():
             try:
                 os.remove(file_path)
@@ -1403,541 +1483,152 @@ async def admin_batch_delete_files(
     }
 
 
-@app.post("/admin/sync-storage")
-async def admin_sync_storage(
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
+@app.post("/files/sync-storage")
+async def sync_storage(
+    db: Session = Depends(get_db)
 ):
     """
-    管理员核对存储：扫描 storage 目录，同步数据库记录
+    核对存储：扫描 storage 目录，同步数据库记录
     - 如果数据库有记录但文件不存在，删除数据库记录
     - 如果文件存在但数据库没有记录，创建数据库记录
     """
     from backend.app.core.file_utils import calculate_sha256
-    from backend.app.core.encoding import safe_str, safe_print
     
     deleted_records = []  # 数据库有但文件不存在的记录
     added_records = []    # 文件存在但数据库没有的记录
     
-    # 1. 扫描 storage 目录下的所有文件（递归）
-    storage_files = {}  # {storage_path: file_path}
-    if STORAGE_DIR.exists():
-        for file_path in STORAGE_DIR.rglob('*'):
-            if file_path.is_file():
-                # 计算相对于 storage 目录的路径
-                try:
-                    relative_path = file_path.relative_to(STORAGE_DIR)
-                    storage_path_str = str(relative_path).replace('\\', '/')  # 统一使用 / 分隔符
-                    storage_files[storage_path_str] = file_path
-                except Exception as e:
-                    safe_print(f"[核对存储] 跳过文件（路径错误）: {file_path}, 错误: {safe_str(e)}")
-                    continue
+    # 1. 扫描所有存储位置下的文件（递归）
+    from backend.app.models import StorageLocation
+    storage_files = {}  # {storage_path: (file_path, storage_location_id)}
+    storage_locations = db.query(StorageLocation).filter(
+        StorageLocation.enabled == True
+    ).all()
+    
+    for storage_location in storage_locations:
+        storage_dir = Path(storage_location.path)
+        if storage_dir.exists():
+            for file_path in storage_dir.rglob('*'):
+                if file_path.is_file():
+                    # 存储绝对路径
+                    storage_path_str = str(file_path.resolve())
+                    storage_files[storage_path_str] = (file_path, storage_location.id)
     
     safe_print(f"[核对存储] 扫描到 {len(storage_files)} 个存储文件")
     
-    # 2. 获取数据库中所有文件记录
+    # 2. 查询数据库中的所有文件记录
     db_files = db.query(File).all()
-    db_storage_paths = {file.storage_path: file for file in db_files}
+    db_files_dict = {file.storage_path: file for file in db_files}
+    safe_print(f"[核对存储] 数据库中有 {len(db_files)} 个文件记录")
     
-    safe_print(f"[核对存储] 数据库中有 {len(db_files)} 条文件记录")
+    # 3. 找出数据库有但文件不存在的记录（需要删除）
+    for storage_path, file_record in db_files_dict.items():
+        # 使用resolve_file_path检查文件是否存在
+        file_path = resolve_file_path(file_record, db)
+        if not file_path.exists():
+            deleted_records.append(file_record)
+            safe_print(f"[核对存储] 发现孤立记录: {storage_path}")
     
-    # 3. 检查数据库记录：如果文件不存在，删除记录
-    for file_record in db_files:
-        storage_path_str = file_record.storage_path
-        # 尝试多种路径格式匹配
-        file_exists = False
-        
-        # 方式1: 直接匹配 storage_path
-        if storage_path_str in storage_files:
-            file_exists = True
-        else:
-            # 方式2: 尝试作为绝对路径
-            abs_path = Path(storage_path_str)
-            if abs_path.exists() and abs_path.is_file():
-                file_exists = True
-            else:
-                # 方式3: 尝试作为相对于 storage 的路径
-                relative_path = STORAGE_DIR / storage_path_str
-                if relative_path.exists() and relative_path.is_file():
-                    file_exists = True
-        
-        if not file_exists:
-            safe_print(f"[核对存储] 发现孤立记录（文件不存在）: ID={file_record.id}, storage_path={storage_path_str}")
-            deleted_records.append({
-                "id": file_record.id,
-                "original_filename": file_record.original_filename,
-                "storage_path": storage_path_str
-            })
-            # 删除数据库记录（关联的标签关系会自动删除）
-            db.delete(file_record)
-    
-    # 4. 检查存储文件：如果数据库没有记录，创建记录
-    for storage_path_str, file_path in storage_files.items():
-        # 检查数据库中是否已有此 storage_path 的记录
-        if storage_path_str not in db_storage_paths:
-            # 还需要检查是否有相同哈希值的记录（可能是路径不同但文件相同）
+    # 4. 找出文件存在但数据库没有的记录（需要添加）
+    duplicate_records = []  # 文件存在但已存在于数据库（重复文件）
+    for storage_path, (file_path, storage_location_id) in storage_files.items():
+        if storage_path not in db_files_dict:
             try:
                 # 计算文件哈希值
-                file_hash = calculate_sha256(str(file_path))
+                sha256_hash = calculate_sha256(str(file_path))
                 file_size = file_path.stat().st_size
                 
-                # 检查是否有相同哈希值的记录
-                existing_file = db.query(File).filter(File.sha256_hash == file_hash).first()
+                # 检查是否已存在相同哈希值的文件（重复文件）
+                existing_file = db.query(File).filter(File.sha256_hash == sha256_hash).first()
                 if existing_file:
-                    safe_print(f"[核对存储] 发现重复文件（相同哈希但路径不同）: storage_path={storage_path_str}, 已有记录ID={existing_file.id}")
-                    # 不创建新记录，但记录这个情况
+                    # 发现重复文件，不添加但记录信息
+                    filename = file_path.name
+                    if '_' in filename:
+                        original_filename = '_'.join(filename.split('_')[1:])
+                    else:
+                        original_filename = filename
+                    
+                    duplicate_records.append({
+                        "storage_path": storage_path,
+                        "original_filename": original_filename,
+                        "file_size": file_size,
+                        "existing_file": {
+                            "id": existing_file.id,
+                            "original_filename": existing_file.original_filename,
+                            "file_size": existing_file.file_size,
+                            "upload_time": existing_file.upload_time.isoformat() if existing_file.upload_time else None,
+                            "tags": [tag.name for tag in existing_file.tags] if existing_file.tags else []
+                        }
+                    })
+                    safe_print(f"[核对存储] 发现重复文件: {storage_path} (已存在文件ID: {existing_file.id}, 文件名: {existing_file.original_filename})")
                     continue
                 
-                # 从文件名推断原始文件名（去掉哈希前缀）
+                # 从路径提取文件名（尝试从文件名中提取原始文件名）
+                # 文件名格式：{hash_prefix}_{original_filename}
                 filename = file_path.name
-                if '_' in filename and len(filename.split('_')[0]) == 8:
-                    # 可能是 {hash8}_{original_name} 格式
+                if '_' in filename:
                     original_filename = '_'.join(filename.split('_')[1:])
                 else:
-                    # 直接使用文件名
                     original_filename = filename
                 
-                # 计算相对路径（如果有子目录）
-                relative_path_value = None
-                if file_path.parent != STORAGE_DIR:
-                    try:
-                        rel_path = file_path.parent.relative_to(STORAGE_DIR)
-                        relative_path_value = str(rel_path).replace('\\', '/')
-                    except:
-                        pass
-                
-                # 创建新的文件记录
+                # 创建数据库记录
                 new_file = File(
                     original_filename=original_filename,
-                    storage_path=storage_path_str,
-                    sha256_hash=file_hash,
+                    storage_path=storage_path,  # 存储绝对路径
+                    sha256_hash=sha256_hash,
                     file_size=file_size,
                     upload_time=datetime.utcnow(),
-                    relative_path=relative_path_value
+                    storage_location_id=storage_location_id
                 )
                 db.add(new_file)
-                db.flush()  # 获取 ID
-                
                 added_records.append({
-                    "id": new_file.id,
+                    "storage_path": storage_path,
                     "original_filename": original_filename,
-                    "storage_path": storage_path_str,
                     "file_size": file_size
                 })
-                safe_print(f"[核对存储] 添加新记录: ID={new_file.id}, filename={original_filename}, storage_path={storage_path_str}")
+                safe_print(f"[核对存储] 发现新文件: {storage_path}")
             except Exception as e:
-                safe_print(f"[核对存储] 处理文件失败: {file_path}, 错误: {safe_str(e)}")
+                safe_print(f"[核对存储] 处理文件失败: {storage_path}, 错误: {safe_str(e)}")
                 continue
     
-    # 提交所有更改
+    # 5. 执行删除和添加操作
+    for file_record in deleted_records:
+        db.delete(file_record)
+    
     db.commit()
     
+    # 构建消息
+    message_parts = []
+    if len(deleted_records) > 0:
+        message_parts.append(f"删除 {len(deleted_records)} 个孤立记录")
+    if len(added_records) > 0:
+        message_parts.append(f"添加 {len(added_records)} 个新文件")
+    if len(duplicate_records) > 0:
+        message_parts.append(f"发现 {len(duplicate_records)} 个重复文件")
+    
+    if message_parts:
+        message = f"存储核对完成：{', '.join(message_parts)}"
+    else:
+        message = "存储核对完成：未发现需要同步的记录"
+    
     return {
-        "message": "存储核对完成",
+        "message": message,
         "deleted_count": len(deleted_records),
         "added_count": len(added_records),
-        "deleted_records": deleted_records,
-        "added_records": added_records
-    }
-
-
-# ==================== 标签管理 API ====================
-
-@app.get("/admin/tags")
-async def admin_get_all_tags(
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员获取所有标签（包含统计信息）
-    """
-    tags = db.query(Tag).all()
-    
-    tag_list = []
-    for tag in tags:
-        file_count = len(tag.files) if tag.files else 0
-        tag_list.append({
-            "id": tag.id,
-            "name": tag.name,
-            "file_count": file_count
-        })
-    
-    tag_list.sort(key=lambda x: (-x["file_count"], x["name"]))
-    
-    return {
-        "tags": tag_list,
-        "total": len(tag_list)
-    }
-
-
-@app.post("/admin/tags")
-async def admin_create_tag(
-    request: CreateTagRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员创建标签
-    """
-    tag_name = request.name.strip().lower()
-    if not tag_name:
-        raise HTTPException(status_code=400, detail="标签名称不能为空")
-    
-    # 检查标签是否已存在
-    existing_tag = db.query(Tag).filter(Tag.name == tag_name).first()
-    if existing_tag:
-        raise HTTPException(status_code=400, detail="标签已存在")
-    
-    tag = Tag(name=tag_name)
-    db.add(tag)
-    db.commit()
-    db.refresh(tag)
-    
-    return {
-        "id": tag.id,
-        "name": tag.name,
-        "message": "标签创建成功"
-    }
-
-
-@app.put("/admin/tags/{tag_id}")
-async def admin_update_tag(
-    tag_id: int,
-    request: UpdateTagRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员更新标签名称
-    """
-    tag = db.query(Tag).filter(Tag.id == tag_id).first()
-    if not tag:
-        raise HTTPException(status_code=404, detail="标签不存在")
-    
-    new_name = request.name.strip().lower()
-    if not new_name:
-        raise HTTPException(status_code=400, detail="标签名称不能为空")
-    
-    # 检查新名称是否已被其他标签使用
-    existing_tag = db.query(Tag).filter(Tag.name == new_name, Tag.id != tag_id).first()
-    if existing_tag:
-        raise HTTPException(status_code=400, detail="标签名称已被使用")
-    
-    tag.name = new_name
-    db.commit()
-    db.refresh(tag)
-    
-    return {
-        "id": tag.id,
-        "name": tag.name,
-        "message": "标签更新成功"
-    }
-
-
-@app.delete("/admin/tags/{tag_id}")
-async def admin_delete_tag(
-    tag_id: int,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员删除标签（会解除所有文件的关联）
-    """
-    tag = db.query(Tag).filter(Tag.id == tag_id).first()
-    if not tag:
-        raise HTTPException(status_code=404, detail="标签不存在")
-    
-    # 获取关联的文件数量
-    file_count = len(tag.files) if tag.files else 0
-    
-    # 删除标签（会自动解除与文件的关联）
-    db.delete(tag)
-    db.commit()
-    
-    return {
-        "message": f"标签删除成功，已解除 {file_count} 个文件的关联",
-        "deleted_tag_id": tag_id,
-        "unlinked_files_count": file_count
-    }
-
-
-@app.post("/admin/tags/batch-delete")
-async def admin_batch_delete_tags(
-    request: BatchDeleteRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员批量删除标签
-    """
-    if not request.ids:
-        raise HTTPException(status_code=400, detail="标签ID列表不能为空")
-    
-    tags = db.query(Tag).filter(Tag.id.in_(request.ids)).all()
-    if not tags:
-        raise HTTPException(status_code=404, detail="未找到标签")
-    
-    deleted_count = 0
-    total_unlinked = 0
-    
-    for tag in tags:
-        file_count = len(tag.files) if tag.files else 0
-        total_unlinked += file_count
-        db.delete(tag)
-        deleted_count += 1
-    
-    db.commit()
-    
-    return {
-        "message": f"成功删除 {deleted_count} 个标签，已解除 {total_unlinked} 个文件的关联",
-        "deleted_count": deleted_count,
-        "unlinked_files_count": total_unlinked
-    }
-
-
-# ==================== 用户管理 API ====================
-
-@app.get("/admin/users")
-async def admin_get_all_users(
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员获取所有用户列表
-    """
-    users = db.query(User).order_by(User.created_at.desc()).all()
-    
-    return {
-        "users": [
+        "duplicate_count": len(duplicate_records),
+        "deleted_records": [
             {
-                "id": user.id,
-                "username": user.username,
-                "is_admin": user.is_admin,
-                "created_at": user.created_at.isoformat() if user.created_at else None,
-                "last_login": user.last_login.isoformat() if user.last_login else None
+                "id": record.id,
+                "storage_path": record.storage_path,
+                "original_filename": record.original_filename
             }
-            for user in users
+            for record in deleted_records
         ],
-        "total": len(users)
+        "added_records": added_records,
+        "duplicate_records": duplicate_records
     }
 
 
-@app.post("/admin/users")
-async def admin_create_user(
-    request: CreateUserRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员创建新用户
-    """
-    username = request.username.strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="用户名不能为空")
-    
-    # 检查用户名是否已存在
-    existing_user = db.query(User).filter(User.username == username).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="用户名已存在")
-    
-    # 验证密码
-    if not request.password or len(request.password) < 6:
-        raise HTTPException(status_code=400, detail="密码长度至少6位")
-    
-    # 创建用户
-    password_hash = get_password_hash(request.password)
-    new_user = User(
-        username=username,
-        hashed_password=password_hash,
-        is_admin=request.is_admin,
-        created_at=datetime.utcnow()
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    return {
-        "id": new_user.id,
-        "username": new_user.username,
-        "is_admin": new_user.is_admin,
-        "message": "用户创建成功"
-    }
-
-
-@app.put("/admin/users/{user_id}")
-async def admin_update_user(
-    user_id: int,
-    request: UpdateUserRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员更新用户信息（密码或权限）
-    """
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 不能修改自己的管理员权限（防止误操作）
-    if user.id == admin_user.id and request.is_admin is not None and not request.is_admin:
-        raise HTTPException(status_code=400, detail="不能取消自己的管理员权限")
-    
-    # 更新密码
-    if request.password:
-        if len(request.password) < 6:
-            raise HTTPException(status_code=400, detail="密码长度至少6位")
-        user.hashed_password = get_password_hash(request.password)
-    
-    # 更新管理员权限
-    if request.is_admin is not None:
-        user.is_admin = request.is_admin
-    
-    db.commit()
-    db.refresh(user)
-    
-    return {
-        "id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "message": "用户更新成功"
-    }
-
-
-@app.delete("/admin/users/{user_id}")
-async def admin_delete_user(
-    user_id: int,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员删除用户
-    """
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 不能删除自己
-    if user.id == admin_user.id:
-        raise HTTPException(status_code=400, detail="不能删除自己的账号")
-    
-    db.delete(user)
-    db.commit()
-    
-    return {
-        "message": "用户删除成功",
-        "deleted_user_id": user_id
-    }
-
-
-# ResetPasswordRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
-
-@app.post("/admin/users/{user_id}/reset-password")
-async def admin_reset_user_password(
-    user_id: int,
-    request: ResetPasswordRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员重置用户密码
-    """
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    
-    # 验证密码
-    if not request.password or len(request.password) < 6:
-        raise HTTPException(status_code=400, detail="密码长度至少6位")
-    
-    # 重置密码
-    user.hashed_password = get_password_hash(request.password)
-    db.commit()
-    db.refresh(user)
-    
-    return {
-        "id": user.id,
-        "username": user.username,
-        "message": "密码重置成功"
-    }
-
-
-# BatchCreateUserRequest 已迁移到 backend.app.api.schemas
-# 已在文件开头导入
-
-@app.post("/admin/users/batch-create")
-async def admin_batch_create_users(
-    request: BatchCreateUserRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_admin_user)
-):
-    """
-    管理员批量创建用户
-    """
-    if not request.users:
-        raise HTTPException(status_code=400, detail="用户列表不能为空")
-    
-    created_users = []
-    failed_users = []
-    
-    for user_request in request.users:
-        try:
-            username = user_request.username.strip()
-            if not username:
-                failed_users.append({
-                    "username": username,
-                    "error": "用户名不能为空"
-                })
-                continue
-            
-            # 检查用户名是否已存在
-            existing_user = db.query(User).filter(User.username == username).first()
-            if existing_user:
-                failed_users.append({
-                    "username": username,
-                    "error": "用户名已存在"
-                })
-                continue
-            
-            # 验证密码
-            if not user_request.password or len(user_request.password) < 6:
-                failed_users.append({
-                    "username": username,
-                    "error": "密码长度至少6位"
-                })
-                continue
-            
-            # 创建用户
-            password_hash = get_password_hash(user_request.password)
-            new_user = User(
-                username=username,
-                hashed_password=password_hash,
-                is_admin=user_request.is_admin,
-                created_at=datetime.utcnow()
-            )
-            db.add(new_user)
-            db.flush()
-            
-            created_users.append({
-                "id": new_user.id,
-                "username": new_user.username,
-                "is_admin": new_user.is_admin
-            })
-        except Exception as e:
-            failed_users.append({
-                "username": user_request.username if user_request else "未知",
-                "error": str(e)
-            })
-    
-    db.commit()
-    
-    return {
-        "message": f"成功创建 {len(created_users)} 个用户，失败 {len(failed_users)} 个",
-        "created_count": len(created_users),
-        "failed_count": len(failed_users),
-        "created_users": created_users,
-        "failed_users": failed_users
-    }
+# ==================== 管理后台 API（已移除） ====================
 
 
 @app.get("/")
@@ -1951,25 +1642,21 @@ async def root():
         "endpoints": {
             "POST /upload": "上传文件",
             "GET /tags": "获取所有标签",
+            "GET /tags/stats": "获取标签统计信息",
+            "POST /tags": "创建标签",
+            "PUT /tags/{id}": "更新标签",
+            "DELETE /tags/{id}": "删除标签",
+            "POST /tags/batch-delete": "批量删除标签",
             "POST /search": "搜索文件",
             "GET /files/{id}/download": "下载文件（标准路径）",
             "GET /download/{id}": "下载文件（简短路径）",
             "GET /files/{id}/preview": "预览文件",
             "DELETE /files/{id}": "删除文件",
             "POST /files/batch-download": "批量下载",
+            "POST /files/batch-delete": "批量删除文件",
+            "POST /files/sync-storage": "核对存储",
             "PUT /files/{id}/tags": "更新文件标签",
-            "POST /files/batch-update-tags": "批量更新标签",
-            "GET /admin/files": "管理后台-获取所有文件",
-            "POST /admin/files/batch-delete": "管理后台-批量删除文件",
-            "GET /admin/tags": "管理后台-获取所有标签",
-            "POST /admin/tags": "管理后台-创建标签",
-            "PUT /admin/tags/{id}": "管理后台-更新标签",
-            "DELETE /admin/tags/{id}": "管理后台-删除标签",
-            "POST /admin/tags/batch-delete": "管理后台-批量删除标签",
-            "GET /admin/users": "管理后台-获取所有用户",
-            "POST /admin/users": "管理后台-创建用户",
-            "PUT /admin/users/{id}": "管理后台-更新用户",
-            "DELETE /admin/users/{id}": "管理后台-删除用户"
+            "POST /files/batch-update-tags": "批量更新标签"
         }
     }
 

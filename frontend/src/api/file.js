@@ -60,6 +60,49 @@ export function getTagsStats() {
 }
 
 /**
+ * 创建标签
+ * @param {string} name - 标签名称
+ * @returns {Promise}
+ */
+export function createTag(name) {
+  return request.post('/tags', {
+    name
+  })
+}
+
+/**
+ * 更新标签
+ * @param {number} tagId - 标签ID
+ * @param {string} name - 新标签名称
+ * @returns {Promise}
+ */
+export function updateTag(tagId, name) {
+  return request.put(`/tags/${tagId}`, {
+    name
+  })
+}
+
+/**
+ * 删除标签
+ * @param {number} tagId - 标签ID
+ * @returns {Promise}
+ */
+export function deleteTag(tagId) {
+  return request.delete(`/tags/${tagId}`)
+}
+
+/**
+ * 批量删除标签
+ * @param {number[]} tagIds - 标签ID列表
+ * @returns {Promise}
+ */
+export function batchDeleteTags(tagIds) {
+  return request.post('/tags/batch-delete', {
+    ids: tagIds
+  })
+}
+
+/**
  * 搜索文件
  * @param {Object} params - 搜索参数
  * @param {Array<string>} params.keywords - 关键词列表

@@ -6,11 +6,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.core.encoding import setup_utf8_encoding, safe_print
+from backend.app.core.encoding import setup_utf8_encoding
+from backend.app.core.logger import get_logger
 from backend.app.config import DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
 from backend.app.database import init_db, get_db
 from backend.app.models import User
 from backend.app.core.security import get_password_hash
+
+logger = get_logger("main")
 from backend.app.middleware.encoding import UTF8EncodingMiddleware
 from backend.app.middleware.exception import (
     http_exception_handler,
@@ -33,7 +36,7 @@ async def lifespan(app: FastAPI):
     """
     # 启动时执行
     init_db()
-    safe_print("数据库初始化完成")
+    logger.info("数据库初始化完成")
     
     # 初始化默认管理员用户（如果不存在）
     db = next(get_db())
@@ -50,17 +53,17 @@ async def lifespan(app: FastAPI):
             )
             db.add(default_user)
             db.commit()
-            safe_print(f"[OK] 已创建默认超级管理员用户: {DEFAULT_ADMIN_USERNAME} / {DEFAULT_ADMIN_PASSWORD}")
+            logger.info(f"已创建默认超级管理员用户: {DEFAULT_ADMIN_USERNAME}")
         else:
             # 如果admin用户已存在但is_admin为False，更新为True
             if not default_user.is_admin:
                 default_user.is_admin = True
                 db.commit()
-                safe_print("[OK] 已将admin用户升级为超级管理员")
+                logger.info("已将admin用户升级为超级管理员")
             else:
-                safe_print("[OK] 默认超级管理员用户已存在")
+                logger.info("默认超级管理员用户已存在")
     except Exception as e:
-        safe_print(f"初始化默认用户失败: {e}")
+        logger.error(f"初始化默认用户失败: {e}", exc_info=True)
         db.rollback()
     finally:
         db.close()
@@ -79,6 +82,10 @@ app = FastAPI(
 
 # 添加编码中间件
 app.add_middleware(UTF8EncodingMiddleware)
+
+# 添加请求大小限制中间件
+from backend.app.middleware.size_limit import RequestSizeLimitMiddleware
+app.add_middleware(RequestSizeLimitMiddleware)
 
 # 配置 CORS
 app.add_middleware(
@@ -101,41 +108,12 @@ from backend.app.api.router import api_router
 # 注册新的模块化路由
 app.include_router(api_router)
 
-# 为了保持功能不变，我们需要导入原有main.py的所有路由
-# 由于原有main.py有2100多行，我们采用兼容方案：
-# 方案：直接使用原有main.py的app对象，但应用新的中间件和配置
-# 这样可以保持所有功能不变，同时展示模块化结构
+# 导入传统路由（临时兼容方案）
+# TODO: 逐步将这些路由迁移到 v1 模块
+from backend.app.api.legacy_routes import register_legacy_routes
 
-import sys
-from pathlib import Path
-
-# 将根目录添加到路径
-root_dir = Path(__file__).parent.parent.parent
-if str(root_dir) not in sys.path:
-    sys.path.insert(0, str(root_dir))
-
-# 导入原有main.py并获取其所有路由
-try:
-    import main as old_main
-    
-    # 将原有main.py的所有路由注册到新app
-    # 由于FastAPI的路由是注册在app对象上的，我们需要重新注册
-    # 但原有main.py的路由已经注册到old_main.app上了
-    
-    # 最实用的方案：直接使用原有main.py的app，但应用新的中间件
-    # 或者：逐步迁移所有路由到新结构
-    
-    # 当前方案：新的模块化结构已创建，路由会逐步迁移
-    # 为了保持功能，我们暂时保留原有main.py作为主入口
-    # 新的模块化结构作为参考和未来迁移目标
-    
-    # 注意：为了确保功能正常，当前仍使用原有main.py
-    # 新的模块化结构已经创建完成，可以作为迁移参考
-    
-except Exception as e:
-    safe_print(f"导入原有路由时出错: {e}")
-    # 如果导入失败，继续使用新的模块化结构
-    pass
+# 注册传统路由
+register_legacy_routes(app)
 
 
 @app.get("/")

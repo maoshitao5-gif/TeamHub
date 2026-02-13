@@ -8,6 +8,17 @@
           <el-text type="info" style="margin-left: 12px;">
             共 {{ total }} 个文件
           </el-text>
+          <div style="margin-left: auto; display: flex; gap: 8px;">
+            <el-button 
+              type="primary" 
+              @click="handleSyncStorage" 
+              :loading="syncLoading"
+              size="small"
+            >
+              <el-icon><Refresh /></el-icon>
+              核对存储
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -127,17 +138,83 @@
       :file="currentFile"
       @saved="handleTagsSaved"
     />
+
+    <!-- 重复文件提示对话框 -->
+    <el-dialog
+      v-model="duplicateDialogVisible"
+      title="发现重复文件"
+      width="800px"
+    >
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 20px;"
+      >
+        <template #title>
+          <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">
+            系统已存在相同内容的文件，这些文件不会被重复添加到数据库
+          </div>
+        </template>
+      </el-alert>
+
+      <el-table :data="duplicateFilesList" stripe style="width: 100%" max-height="400">
+        <el-table-column prop="original_filename" label="文件名" min-width="200" show-overflow-tooltip />
+        <el-table-column label="文件大小" width="120">
+          <template #default="{ row }">
+            {{ formatFileSize(row.file_size) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="已存在文件" min-width="200">
+          <template #default="{ row }">
+            <div v-if="row.existing_file">
+              <div style="font-weight: 600; margin-bottom: 4px;">
+                {{ row.existing_file.original_filename }}
+              </div>
+              <el-text type="info" size="small">
+                文件ID: #{{ row.existing_file.id }}
+              </el-text>
+              <div v-if="row.existing_file.tags && row.existing_file.tags.length > 0" style="margin-top: 4px;">
+                <el-tag
+                  v-for="tag in row.existing_file.tags"
+                  :key="tag"
+                  type="primary"
+                  effect="plain"
+                  size="small"
+                  style="margin-right: 4px; margin-bottom: 4px;"
+                >
+                  {{ tag }}
+                </el-tag>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="上传时间" width="180">
+          <template #default="{ row }">
+            <div v-if="row.existing_file && row.existing_file.upload_time">
+              {{ formatDateTime(row.existing_file.upload_time) }}
+            </div>
+            <el-text v-else type="info" size="small">未知</el-text>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <el-button type="primary" @click="duplicateDialogVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Download, Delete, PriceTag, View, FolderOpened } from '@element-plus/icons-vue'
+import { Document, Download, Delete, PriceTag, View, FolderOpened, Refresh } from '@element-plus/icons-vue'
 import { formatFileSize, formatDateTime } from '@/utils/format'
 import FilePreview from './FilePreview.vue'
 import FileTagEditor from './FileTagEditor.vue'
 import { downloadFile, deleteFile, revealFile, openFile } from '@/api/file'
+import { syncStorage } from '@/api/admin'
 
 const props = defineProps({
   files: {
@@ -167,6 +244,7 @@ const currentFile = ref(null)
 // 选中的文件列表
 const selectedFiles = ref([])
 const tableRef = ref(null)
+const syncLoading = ref(false)
 
 // 判断文件是否可预览（支持 jpg, jpeg, png, gif 和 pdf）
 const isPreviewable = (file) => {
@@ -273,6 +351,47 @@ const handleDelete = async (row) => {
     }
   } catch {
     // 用户取消删除
+  }
+}
+
+// 核对存储
+const duplicateDialogVisible = ref(false)
+const duplicateFilesList = ref([])
+
+const handleSyncStorage = async () => {
+  syncLoading.value = true
+  try {
+    await ElMessageBox.confirm(
+      '核对存储将扫描 storage 目录，同步数据库记录。确定要继续吗？',
+      '确认核对存储',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'info',
+      }
+    )
+    
+    const result = await syncStorage()
+    const message = result.message || `存储核对完成：删除 ${result.deleted_count || 0} 个孤立记录，添加 ${result.added_count || 0} 个新文件`
+    
+    // 如果有重复文件，显示详细信息
+    if (result.duplicate_count > 0 && result.duplicate_records && result.duplicate_records.length > 0) {
+      duplicateFilesList.value = result.duplicate_records
+      duplicateDialogVisible.value = true
+      ElMessage.warning(`存储核对完成，但发现 ${result.duplicate_count} 个重复文件`)
+    } else {
+      ElMessage.success(message)
+    }
+    
+    emit('refresh')
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('核对存储失败:', error)
+      const errorMessage = error.response?.data?.detail || error.message || '核对存储失败'
+      ElMessage.error(errorMessage)
+    }
+  } finally {
+    syncLoading.value = false
   }
 }
 

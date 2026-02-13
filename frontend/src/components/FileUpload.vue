@@ -54,6 +54,43 @@
         </div>
       </div>
 
+      <!-- 存储位置选择 -->
+      <div class="storage-location-section">
+        <div class="storage-location-label">
+          <el-icon><FolderOpened /></el-icon>
+          <span>选择存储位置</span>
+        </div>
+        <el-select
+          v-model="selectedStorageLocationId"
+          placeholder="请选择存储位置"
+          style="width: 100%; max-width: 500px;"
+          @change="handleStorageLocationChange"
+        >
+          <el-option
+            v-for="location in storageLocations"
+            :key="location.id"
+            :label="`${location.name}${location.is_default ? ' (默认)' : ''} - ${location.path}`"
+            :value="location.id"
+            :disabled="!location.enabled"
+          >
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span>{{ location.name }}{{ location.is_default ? ' (默认)' : '' }}</span>
+              <el-tag v-if="!location.enabled" type="info" size="small" style="margin-left: 8px;">已禁用</el-tag>
+            </div>
+            <div style="font-size: 12px; color: #909399; margin-top: 4px;">{{ location.path }}</div>
+          </el-option>
+        </el-select>
+        <el-button
+          type="primary"
+          link
+          @click="showStorageLocationListDialog = true"
+          style="margin-left: 12px;"
+        >
+          <el-icon><Setting /></el-icon>
+          管理存储位置
+        </el-button>
+      </div>
+
       <!-- 上传模式选择 -->
       <div class="upload-mode-section">
         <el-radio-group v-model="uploadMode" @change="handleModeChange">
@@ -275,6 +312,113 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 存储位置管理对话框 -->
+    <el-dialog
+      v-model="showStorageLocationDialog"
+      :title="storageLocationDialogTitle"
+      width="600px"
+      :close-on-click-modal="false"
+    >
+      <el-form :model="storageLocationForm" label-width="100px" label-position="left">
+        <el-form-item label="位置名称" required>
+          <el-input
+            v-model="storageLocationForm.name"
+            placeholder="请输入存储位置名称"
+            maxlength="100"
+            clearable
+          />
+        </el-form-item>
+        <el-form-item label="存储路径" required>
+          <div style="display: flex; gap: 8px; width: 100%;">
+            <el-input
+              v-model="storageLocationForm.path"
+              placeholder="请输入绝对路径，例如：D:\Files 或 /home/files"
+              clearable
+              style="flex: 1;"
+            />
+            <el-button
+              type="primary"
+              @click="selectStoragePath"
+              :icon="FolderOpened"
+            >
+              选择路径
+            </el-button>
+          </div>
+          <el-text type="info" size="small" style="display: block; margin-top: 8px;">
+            必须是绝对路径，系统会自动创建目录（如果不存在）
+          </el-text>
+        </el-form-item>
+        <el-form-item label="启用状态">
+          <el-switch v-model="storageLocationForm.enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="showStorageLocationDialog = false">取消</el-button>
+          <el-button type="primary" @click="saveStorageLocation">确定</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 存储位置列表对话框 -->
+    <el-dialog
+      v-model="showStorageLocationListDialog"
+      title="管理存储位置"
+      width="800px"
+    >
+      <el-table :data="storageLocations" stripe style="width: 100%">
+        <el-table-column prop="name" label="名称" min-width="150">
+          <template #default="{ row }">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span>{{ row.name }}</span>
+              <el-tag v-if="row.is_default" type="primary" size="small">默认</el-tag>
+              <el-tag v-if="!row.enabled" type="info" size="small">已禁用</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="path" label="路径" min-width="300" show-overflow-tooltip />
+        <el-table-column label="操作" width="280" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              type="primary"
+              link
+              @click="openStorageLocationDialog('edit', row)"
+              :icon="Edit"
+            >
+              编辑
+            </el-button>
+            <el-button
+              v-if="!row.is_default"
+              type="primary"
+              link
+              @click="handleSetDefaultStorageLocation(row)"
+              :icon="Star"
+            >
+              设为默认
+            </el-button>
+            <el-button
+              v-if="!row.is_default"
+              type="danger"
+              link
+              @click="handleDeleteStorageLocation(row)"
+              :icon="Delete"
+            >
+              删除
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button type="primary" @click="openStorageLocationDialog('add')">
+            <el-icon><Plus /></el-icon>
+            添加存储位置
+          </el-button>
+          <el-button @click="showStorageLocationListDialog = false">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -283,9 +427,10 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Upload, UploadFilled, PriceTag, Loading, Search, 
-  CircleCheck, Warning, CircleClose, FolderOpened, Document
+  CircleCheck, Warning, CircleClose, FolderOpened, Document, Setting, Edit, Delete, Plus, Star
 } from '@element-plus/icons-vue'
 import { uploadFile, uploadFolder, getTags } from '@/api/file'
+import { getStorageLocations, createStorageLocation, updateStorageLocation, deleteStorageLocation, setDefaultStorageLocation } from '@/api/storage'
 import JSZip from 'jszip'
 
 const emit = defineEmits(['upload-success', 'jump-to-file'])
@@ -317,6 +462,20 @@ const compressing = ref(false) // 压缩中状态
 // 拖拽状态
 const isDragging = ref(false) // 是否正在拖拽
 const dragCounter = ref(0) // 拖拽计数器，用于处理嵌套元素
+
+// 存储位置相关
+const storageLocations = ref([])
+const selectedStorageLocationId = ref(null)
+const showStorageLocationDialog = ref(false)
+const showStorageLocationListDialog = ref(false)
+const storageLocationForm = ref({
+  id: null,
+  name: '',
+  path: '',
+  enabled: true
+})
+const storageLocationDialogTitle = ref('添加存储位置')
+const storageLocationDialogMode = ref('add') // 'add' 或 'edit'
 
 // 计算是否可以上传
 const canUpload = computed(() => {
@@ -365,6 +524,238 @@ const loadAllTags = async () => {
     allTags.value = result.tags || []
   } catch (error) {
     console.error('加载标签失败:', error)
+  }
+}
+
+// 加载存储位置列表
+const loadStorageLocations = async () => {
+  try {
+    const locations = await getStorageLocations()
+    storageLocations.value = locations
+    // 如果没有选择存储位置，选择默认的
+    if (!selectedStorageLocationId.value && locations.length > 0) {
+      const defaultLocation = locations.find(loc => loc.is_default && loc.enabled)
+      if (defaultLocation) {
+        selectedStorageLocationId.value = defaultLocation.id
+      } else {
+        // 如果没有默认的，选择第一个启用的
+        const enabledLocation = locations.find(loc => loc.enabled)
+        if (enabledLocation) {
+          selectedStorageLocationId.value = enabledLocation.id
+        }
+      }
+    }
+  } catch (error) {
+    console.error('加载存储位置失败:', error)
+    const errorMessage = error.response?.data?.detail || error.message || '加载存储位置失败'
+    ElMessage.error(errorMessage)
+  }
+}
+
+// 处理存储位置变化
+const handleStorageLocationChange = (locationId) => {
+  console.log('存储位置已选择:', locationId)
+}
+
+// 打开存储位置管理对话框
+const openStorageLocationDialog = (mode = 'add', location = null) => {
+  storageLocationDialogMode.value = mode
+  if (mode === 'add') {
+    storageLocationDialogTitle.value = '添加存储位置'
+    storageLocationForm.value = {
+      id: null,
+      name: '',
+      path: '',
+      enabled: true
+    }
+  } else {
+    storageLocationDialogTitle.value = '编辑存储位置'
+    storageLocationForm.value = {
+      id: location.id,
+      name: location.name,
+      path: location.path,
+      enabled: location.enabled
+    }
+  }
+  showStorageLocationDialog.value = true
+}
+
+// 保存存储位置
+const saveStorageLocation = async () => {
+  if (!storageLocationForm.value.name || !storageLocationForm.value.path) {
+    ElMessage.warning('请填写存储位置名称和路径')
+    return
+  }
+  
+  try {
+    if (storageLocationDialogMode.value === 'add') {
+      await createStorageLocation(storageLocationForm.value)
+      ElMessage.success('存储位置添加成功')
+    } else {
+      await updateStorageLocation(storageLocationForm.value.id, storageLocationForm.value)
+      ElMessage.success('存储位置更新成功')
+    }
+    showStorageLocationDialog.value = false
+    await loadStorageLocations()
+  } catch (error) {
+    console.error('保存存储位置失败:', error)
+    const errorMessage = error.response?.data?.detail || error.message || '保存存储位置失败'
+    ElMessage.error(errorMessage)
+  }
+}
+
+// 删除存储位置
+const handleDeleteStorageLocation = async (location) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除存储位置 "${location.name}" 吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+    await deleteStorageLocation(location.id)
+    ElMessage.success('存储位置删除成功')
+    await loadStorageLocations()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除存储位置失败:', error)
+      const errorMessage = error.response?.data?.detail || error.message || '删除存储位置失败'
+      ElMessage.error(errorMessage)
+    }
+  }
+}
+
+// 设置默认存储位置
+const handleSetDefaultStorageLocation = async (location) => {
+  try {
+    await setDefaultStorageLocation(location.id)
+    ElMessage.success('默认存储位置已更新')
+    await loadStorageLocations()
+  } catch (error) {
+    console.error('设置默认存储位置失败:', error)
+    const errorMessage = error.response?.data?.detail || error.message || '设置默认存储位置失败'
+    ElMessage.error(errorMessage)
+  }
+}
+
+// 选择存储路径
+const selectStoragePath = async () => {
+  try {
+    // 检查浏览器是否支持 File System Access API
+    if ('showDirectoryPicker' in window) {
+      // 使用 File System Access API（现代浏览器，Chrome/Edge 86+, Safari 15.2+）
+      try {
+        const directoryHandle = await window.showDirectoryPicker()
+        
+        // 尝试通过目录句柄获取路径
+        // 注意：浏览器安全限制，无法直接获取完整路径
+        // 但我们可以尝试通过其他方式获取
+        
+        let selectedPath = ''
+        
+        // 方法1: 尝试获取目录名称
+        if (directoryHandle.name) {
+          selectedPath = directoryHandle.name
+        }
+        
+        // 方法2: 尝试通过目录句柄的 getDirectoryHandle 获取父路径
+        // 注意：这需要用户授权，且无法获取完整路径
+        try {
+          // 尝试读取目录中的文件来确认目录存在
+          const entries = []
+          for await (const entry of directoryHandle.values()) {
+            entries.push(entry.name)
+            if (entries.length >= 1) break // 只读取一个条目来确认
+          }
+          
+          // 如果能够读取目录内容，说明目录有效
+          // 但由于浏览器安全限制，我们无法获取完整路径
+          // 提示用户手动输入完整路径
+          
+          ElMessageBox.prompt(
+            '已选择目录，但由于浏览器安全限制，无法自动获取完整路径。\n\n请手动输入该目录的完整绝对路径（例如：C:\\Users\\Documents\\MyFolder 或 /home/user/documents/myfolder）',
+            '输入完整路径',
+            {
+              confirmButtonText: '确定',
+              cancelButtonText: '取消',
+              inputValue: selectedPath || '',
+              inputPlaceholder: '请输入完整的绝对路径',
+              inputValidator: (value) => {
+                if (!value || !value.trim()) {
+                  return '路径不能为空'
+                }
+                // 简单验证：检查是否看起来像绝对路径
+                const trimmed = value.trim()
+                const isAbsolute = 
+                  (trimmed.match(/^[a-zA-Z]:[\\/]/)) || // Windows: C:\ or C:/
+                  (trimmed.startsWith('/')) || // Unix/Linux/Mac: /home
+                  (trimmed.startsWith('\\')) // Windows UNC: \\server\share
+                
+                if (!isAbsolute) {
+                  return '请输入绝对路径（例如：C:\\Files 或 /home/files）'
+                }
+                return true
+              }
+            }
+          ).then(({ value }) => {
+            if (value && value.trim()) {
+              storageLocationForm.value.path = value.trim()
+            }
+          }).catch(() => {
+            // 用户取消
+          })
+        } catch (readError) {
+          console.error('读取目录失败:', readError)
+          ElMessage.warning('无法验证目录，请手动输入完整路径')
+        }
+      } catch (error) {
+        // 用户取消选择或其他错误
+        if (error.name !== 'AbortError') {
+          console.error('选择目录失败:', error)
+          ElMessage.warning('选择目录失败，请手动输入存储路径')
+        }
+      }
+    } else {
+      // 降级方案：使用文件选择器提示用户
+      ElMessageBox.prompt(
+        '您的浏览器不支持文件夹选择功能。\n\n请手动输入存储位置的完整绝对路径（例如：C:\\Users\\Documents\\MyFolder 或 /home/user/documents/myfolder）',
+        '输入存储路径',
+        {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          inputValue: storageLocationForm.value.path || '',
+          inputPlaceholder: '请输入完整的绝对路径',
+          inputValidator: (value) => {
+            if (!value || !value.trim()) {
+              return '路径不能为空'
+            }
+            // 简单验证：检查是否看起来像绝对路径
+            const trimmed = value.trim()
+            const isAbsolute = 
+              (trimmed.match(/^[a-zA-Z]:[\\/]/)) || // Windows: C:\ or C:/
+              (trimmed.startsWith('/')) || // Unix/Linux/Mac: /home
+              (trimmed.startsWith('\\')) // Windows UNC: \\server\share
+            
+            if (!isAbsolute) {
+              return '请输入绝对路径（例如：C:\\Files 或 /home/files）'
+            }
+            return true
+          }
+        }
+      ).then(({ value }) => {
+        if (value && value.trim()) {
+          storageLocationForm.value.path = value.trim()
+        }
+      }).catch(() => {
+        // 用户取消
+      })
+    }
+  } catch (error) {
+    console.error('选择路径失败:', error)
+    ElMessage.warning('选择路径失败，请手动输入存储路径')
   }
 }
 
@@ -888,6 +1279,11 @@ const handleSingleUpload = async () => {
     tags.value.forEach(tag => {
       formData.append('tags', tag)
     })
+    
+    // 添加存储位置ID
+    if (selectedStorageLocationId.value) {
+      formData.append('storage_location_id', selectedStorageLocationId.value)
+    }
 
     // 上传进度回调
     const onUploadProgress = (progressEvent) => {
@@ -1231,6 +1627,11 @@ const handleFolderUpload = async () => {
     tags.value.forEach(tag => {
       formData.append('tags', tag)
     })
+    
+    // 添加存储位置ID
+    if (selectedStorageLocationId.value) {
+      formData.append('storage_location_id', selectedStorageLocationId.value)
+    }
 
     // 上传进度回调
     const onUploadProgress = (progressEvent) => {
@@ -1448,6 +1849,7 @@ const handleReset = () => {
 // 组件挂载时加载标签
 onMounted(() => {
   loadAllTags()
+  loadStorageLocations()
 })
 </script>
 
@@ -1571,6 +1973,29 @@ onMounted(() => {
 .tag-hint :deep(.el-text) {
   color: #7f8c8d;
   font-size: 12px;
+}
+
+/* 存储位置选择样式 */
+.storage-location-section {
+  margin-bottom: 24px;
+  padding: 20px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+.storage-location-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #34495e;
+}
+
+.storage-location-label .el-icon {
+  color: #2c3e50;
 }
 
 .upload-dragger {

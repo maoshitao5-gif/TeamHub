@@ -4,7 +4,7 @@ API 路由注册模块
 """
 from fastapi import APIRouter
 
-from backend.app.api.v1 import auth
+from backend.app.api.v1 import auth, storage
 
 # 创建主路由器
 api_router = APIRouter()
@@ -15,6 +15,9 @@ api_router = APIRouter()
 
 # 注册认证路由（已迁移）
 api_router.include_router(auth.router)
+
+# 注册存储位置管理路由
+api_router.include_router(storage.router)
 
 # 其他路由暂时保留在main.py中，逐步迁移
 # TODO: 迁移文件路由到 app.api.v1.files
