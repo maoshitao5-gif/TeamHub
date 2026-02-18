@@ -770,47 +770,16 @@ def merge_as_versions(
     else:
         versions_dir = None
 
-    # 确保 base 文档有版本记录
-    existing_versions = db.query(Version).filter(
-        Version.document_id == base_doc.id,
-        Version.relative_path.is_(None)
-    ).order_by(Version.version_number.desc()).all()
+    # 方案：所有文档按时间从旧到新排，依次分配 v1, v2, v3...
+    # base 文档（最新）获得最大版本号且为当前版本
+    # 先清除 base 文档的现有版本记录（quick-add 的文档没有版本记录）
+    db.query(Version).filter(
+        Version.document_id == base_doc.id
+    ).delete(synchronize_session=False)
+    db.flush()
 
-    if not existing_versions:
-        # quick_add 创建的文档没有 Version 记录，补建
-        if base_doc.storage_path:
-            bp = library / base_doc.storage_path
-            v = Version(
-                document_id=base_doc.id,
-                version_number=1,
-                file_path=str(bp),
-                file_size=base_doc.total_size,
-                original_filename=bp.name,
-                is_current=True
-            )
-            db.add(v)
-            db.flush()
-            background_tasks.add_task(_compute_hash_background, v.id, str(bp))
-            next_version_number = 2
-        else:
-            next_version_number = 1
-    else:
-        next_version_number = existing_versions[0].version_number + 1
-
-    # 将旧文档的文件移入 base 文档的 .versions/ 目录，创建版本记录
-    # 旧文档按时间从旧到新排列，版本号从小到大
-    # 重新分配：旧文档获得较小的版本号
-    # 先把 base 的当前版本号调整到最大
-    final_version_number = len(older_docs) + (1 if existing_versions else 1)
-
-    # 简单方案：旧的文档从 v1 开始编号，base 文档的当前版本号为最大
+    # older_docs 已按 created_at 从旧到新排列，从 v1 开始
     version_num = 1
-    # 先将 base 的现有版本号重新编排
-    if existing_versions:
-        for ev in reversed(existing_versions):
-            # 保留但不重新编号（已有版本保持不动）
-            pass
-        version_num = existing_versions[0].version_number + 1
 
     # 处理旧文档（按时间从旧到新），分配递增版本号
     for old_doc in older_docs:
@@ -843,12 +812,22 @@ def merge_as_versions(
 
         version_num += 1
 
-    # 更新 base 文档的当前版本号为最大
-    if existing_versions:
-        current_ver = existing_versions[0]
-        if version_num > current_ver.version_number:
-            current_ver.version_number = version_num
-            current_ver.is_current = True
+    # 为 base 文档创建最新版本（当前版本）
+    if base_doc.storage_path:
+        bp = library / base_doc.storage_path
+        file_path_str = str(bp)
+        file_size = os.path.getsize(file_path_str) if os.path.isfile(file_path_str) else 0
+        v = Version(
+            document_id=base_doc.id,
+            version_number=version_num,
+            file_path=file_path_str,
+            file_size=file_size,
+            original_filename=bp.name,
+            is_current=True
+        )
+        db.add(v)
+        db.flush()
+        background_tasks.add_task(_compute_hash_background, v.id, file_path_str)
 
     # 删除旧文档的 DB 记录
     for old_doc in older_docs:
