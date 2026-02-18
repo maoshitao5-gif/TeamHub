@@ -7,9 +7,7 @@ __pycache__/
 env/
 venv/
 ENV/
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -22,6 +20,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Python build and dist (PyInstaller)
+dist/teamhub-backend*
+build/teamhub-backend/
 
 # 数据库文件
 *.db
@@ -63,5 +65,17 @@ tmp/
 
 # 前端
 node_modules/
-dist/
+frontend/dist/
 *.local
+
+# Electron
+dist-electron/
+out/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+
+# Electron build cache
+electron-builder-cache/

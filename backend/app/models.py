@@ -1,115 +1,145 @@
 """
 数据模型模块
-定义数据库表结构和关系
+定义 Document、Version、Tag 表结构和关系
+使用 UUID v7 作为主键，为未来远端同步预留
 """
-from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Table, ForeignKey, Boolean
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Column, String, DateTime, BigInteger, Integer, Boolean, Table, ForeignKey, Text
 from sqlalchemy.orm import relationship
-from datetime import datetime
 from backend.app.database import Base
 
-# ========== 存储位置（多目录）==========
-class StorageLocation(Base):
-    """
-    存储位置表模型
-    用于配置多个本地存储目录，并允许设置默认存储位置
-    """
-    __tablename__ = "storage_locations"
 
-    id = Column(Integer, primary_key=True, index=True, comment="存储位置ID")
-    name = Column(String(100), nullable=False, unique=True, index=True, comment="存储位置名称")
-    path = Column(String(1000), nullable=False, unique=True, comment="本地存储路径（绝对路径）")
-    enabled = Column(Boolean, default=True, nullable=False, comment="是否启用")
-    is_default = Column(Boolean, default=False, nullable=False, comment="是否默认")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="创建时间")
-    
-    # 关联的文件
-    files = relationship("File", back_populates="storage_location")
+def generate_uuid() -> str:
+    """生成 UUID 字符串（优先 UUID v7，回退到 UUID v4）"""
+    if hasattr(uuid, 'uuid7'):
+        return str(uuid.uuid7())
+    # Python < 3.13.1 回退到 uuid4（仍然全局唯一，只是不可排序）
+    return str(uuid.uuid4())
 
-# FileTag 中间表，用于实现文件与标签的多对多关系
-file_tag_association = Table(
-    'file_tag',
+
+def utc_now() -> datetime:
+    """获取当前 UTC 时间"""
+    return datetime.now(timezone.utc)
+
+
+# ========== 文档-标签 多对多关联表 ==========
+document_tag = Table(
+    'document_tag',
     Base.metadata,
-    Column('file_id', Integer, ForeignKey('files.id'), primary_key=True),
-    Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
+    Column('document_id', String(36), ForeignKey('documents.id', ondelete='CASCADE'), primary_key=True),
+    Column('tag_id', String(36), ForeignKey('tags.id', ondelete='CASCADE'), primary_key=True)
 )
 
 
-class File(Base):
+class Document(Base):
     """
-    文件表模型
-    存储文件的基本信息和元数据
+    文档表 —— 管理的最小单位
+    一个文档可以是单个文件，也可以是一个文件夹
     """
-    __tablename__ = "files"
+    __tablename__ = "documents"
 
-    # 主键ID
-    id = Column(Integer, primary_key=True, index=True, comment="文件ID")
+    # UUID v7 主键
+    id = Column(String(36), primary_key=True, default=generate_uuid)
 
-    # 原始文件名（用户上传时的文件名）
-    original_filename = Column(String(255), nullable=False, comment="原始文件名")
+    # 文档名称（用户可修改）
+    name = Column(String(255), nullable=False, index=True)
 
-    # 文件在服务器上的存储路径（绝对路径）
-    storage_path = Column(String(500), nullable=False, unique=True, comment="存储路径（绝对路径）")
-    
-    # 关联的存储位置ID（允许NULL以兼容旧数据）
-    storage_location_id = Column(Integer, ForeignKey('storage_locations.id'), nullable=True, comment="存储位置ID")
+    # 描述/备注（可选）
+    description = Column(Text, nullable=True)
 
-    # SHA-256 哈希值，用于文件查重
-    sha256_hash = Column(String(64), nullable=False, unique=True, index=True, comment="SHA-256哈希值")
+    # 是否为文件夹文档
+    is_folder = Column(Boolean, default=False, nullable=False)
+
+    # 文件库中的存储路径（相对于文件库根目录）
+    storage_path = Column(String(1000), nullable=True)
+
+    # 收纳方式: move / copy / index
+    storage_mode = Column(String(10), nullable=False, default="move")
+
+    # 原始路径（收纳前的位置，用于 index 模式和追溯）
+    original_path = Column(String(1000), nullable=True)
+
+    # 状态: organized / pending / missing / trashed
+    status = Column(String(20), nullable=False, default="pending", index=True)
+
+    # 包含的文件数（单文件=1，文件夹=内部文件数）
+    file_count = Column(Integer, default=1, nullable=False)
+
+    # 总大小（字节）
+    total_size = Column(BigInteger, default=0, nullable=False)
+
+    # 时间戳（全部 UTC）
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    trashed_at = Column(DateTime(timezone=True), nullable=True)
+    last_scanned_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 关系
+    tags = relationship("Tag", secondary=document_tag, back_populates="documents", lazy="selectin")
+    versions = relationship("Version", back_populates="document", cascade="all, delete-orphan",
+                            order_by="Version.version_number.desc()")
+
+
+class Version(Base):
+    """
+    版本表 —— 文档的某一个版本
+    单文件文档：每个版本对应一个完整文件
+    文件夹文档：每个版本对应文件夹内某个文件的某一版
+    """
+    __tablename__ = "versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+
+    # 所属文档
+    document_id = Column(String(36), ForeignKey('documents.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # 版本号（1, 2, 3...）
+    version_number = Column(Integer, nullable=False)
+
+    # 该版本文件的物理路径（绝对路径）
+    file_path = Column(String(1000), nullable=False)
+
+    # 文件夹内的相对路径（文件夹文档专用）
+    # 单文件文档为 NULL
+    # 文件夹文档为如 "04-合同/采购合同.pdf"
+    relative_path = Column(String(500), nullable=True)
+
+    # SHA-256 文件哈希
+    sha256_hash = Column(String(64), nullable=True, index=True)
 
     # 文件大小（字节）
-    file_size = Column(BigInteger, nullable=False, comment="文件大小（字节）")
+    file_size = Column(BigInteger, default=0, nullable=False)
 
-    # 上传时间
-    upload_time = Column(DateTime, default=datetime.utcnow, nullable=False, comment="上传时间")
+    # 原始文件名
+    original_filename = Column(String(255), nullable=False)
 
-    # 相对路径（用于文件夹上传，存储文件在文件夹中的相对路径）
-    relative_path = Column(String(500), nullable=True, comment="相对路径（文件夹结构）")
+    # 版本备注（可选）
+    note = Column(Text, nullable=True)
 
-    # 多对多关系：一个文件可以有多个标签
-    tags = relationship("Tag", secondary=file_tag_association, back_populates="files")
-    
-    # 关联的存储位置
-    storage_location = relationship("StorageLocation", back_populates="files")
+    # 是否为当前版本
+    is_current = Column(Boolean, default=True, nullable=False)
+
+    # 时间戳
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    # 关系
+    document = relationship("Document", back_populates="versions")
 
 
 class Tag(Base):
     """
-    标签表模型
-    存储标签信息
+    标签表
     """
     __tablename__ = "tags"
 
-    # 主键ID
-    id = Column(Integer, primary_key=True, index=True, comment="标签ID")
+    id = Column(String(36), primary_key=True, default=generate_uuid)
 
-    # 标签名称（唯一，不区分大小写）
-    name = Column(String(50), nullable=False, unique=True, index=True, comment="标签名称")
+    # 标签名称（唯一）
+    name = Column(String(100), nullable=False, unique=True, index=True)
 
-    # 多对多关系：一个标签可以关联多个文件
-    files = relationship("File", secondary=file_tag_association, back_populates="tags")
+    # 标签颜色（hex 值，如 #FF5733，可选）
+    color = Column(String(7), nullable=True)
 
-
-class User(Base):
-    """
-    用户表模型
-    存储用户账号和密码信息
-    """
-    __tablename__ = "users"
-
-    # 主键ID
-    id = Column(Integer, primary_key=True, index=True, comment="用户ID")
-
-    # 用户名（唯一）
-    username = Column(String(50), nullable=False, unique=True, index=True, comment="用户名")
-
-    # 密码哈希值（不存储明文密码）
-    hashed_password = Column(String(255), nullable=False, comment="密码哈希值")
-
-    # 创建时间
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="创建时间")
-
-    # 最后登录时间
-    last_login = Column(DateTime, nullable=True, comment="最后登录时间")
-    
-    # 是否为超级管理员
-    is_admin = Column(Boolean, default=False, nullable=False, comment="是否为超级管理员")
+    # 关系
+    documents = relationship("Document", secondary=document_tag, back_populates="tags", lazy="selectin")

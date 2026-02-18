@@ -1,64 +1,97 @@
 <template>
   <div class="app-container">
-    <!-- 顶部导航栏 -->
-    <el-header class="app-header">
-      <div class="header-content">
-        <div class="logo-section" @click="$router.push('/files')" style="cursor: pointer;">
-          <el-icon class="logo-icon"><FolderOpened /></el-icon>
-          <h1 class="app-title">团队文件管理系统</h1>
-        </div>
-        
-        <!-- 导航菜单 -->
-        <div class="nav-menu">
-          <el-menu
-            :default-active="activeMenu"
-            mode="horizontal"
-            class="header-menu"
-            @select="handleMenuSelect"
-          >
-            <el-menu-item index="/files">
-              <el-icon><Document /></el-icon>
-              <span>文件列表</span>
-            </el-menu-item>
-            <el-menu-item index="/upload">
-              <el-icon><Upload /></el-icon>
-              <span>上传文件</span>
-            </el-menu-item>
-            <el-menu-item index="/tags">
-              <el-icon><PriceTag /></el-icon>
-              <span>标签管理</span>
-            </el-menu-item>
-          </el-menu>
-        </div>
+    <!-- 初始化向导 -->
+    <template v-if="appStore.needSetup && $route.name !== 'Setup'">
+      <router-view v-if="$route.name === 'Setup'" />
+      <div v-else class="setup-redirect">
+        <SetupPage />
       </div>
-    </el-header>
+    </template>
 
-    <!-- 主内容区 -->
-    <el-main class="app-main">
-      <div class="content-wrapper">
-        <router-view />
-      </div>
-    </el-main>
+    <!-- 正常布局 -->
+    <template v-else-if="!appStore.needSetup">
+      <!-- 顶部导航栏 -->
+      <el-header class="app-header">
+        <div class="header-content">
+          <div class="logo-section" @click="$router.push('/library')" style="cursor: pointer;">
+            <el-icon class="logo-icon"><FolderOpened /></el-icon>
+            <h1 class="app-title">TeamHub</h1>
+          </div>
+
+          <!-- 导航菜单 -->
+          <div class="nav-menu">
+            <el-menu
+              :default-active="activeMenu"
+              mode="horizontal"
+              class="header-menu"
+              @select="handleMenuSelect"
+            >
+              <el-menu-item index="/library">
+                <el-icon><Folder /></el-icon>
+                <span>文档库</span>
+              </el-menu-item>
+              <el-menu-item index="/pending">
+                <el-icon><Download /></el-icon>
+                <span>待整理</span>
+                <el-badge v-if="appStore.pendingCount > 0" :value="appStore.pendingCount" class="nav-badge" />
+              </el-menu-item>
+              <el-menu-item index="/tags">
+                <el-icon><PriceTag /></el-icon>
+                <span>标签管理</span>
+              </el-menu-item>
+              <el-menu-item index="/trash">
+                <el-icon><Delete /></el-icon>
+                <span>回收站</span>
+              </el-menu-item>
+              <el-menu-item index="/settings">
+                <el-icon><Setting /></el-icon>
+                <span>设置</span>
+              </el-menu-item>
+            </el-menu>
+          </div>
+        </div>
+      </el-header>
+
+      <!-- 主内容区 -->
+      <el-main class="app-main">
+        <div class="content-wrapper">
+          <router-view />
+        </div>
+      </el-main>
+    </template>
+
+    <!-- Setup 页面单独渲染 -->
+    <template v-else>
+      <router-view />
+    </template>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { FolderOpened, Document, Upload, PriceTag } from '@element-plus/icons-vue'
+import { useAppStore } from '@/stores/app'
+import { FolderOpened, Folder, Download, PriceTag, Delete, Setting } from '@element-plus/icons-vue'
+import SetupPage from '@/pages/SetupPage.vue'
 
 const route = useRoute()
 const router = useRouter()
+const appStore = useAppStore()
 
-// 计算当前激活的菜单项
-const activeMenu = computed(() => {
-  return route.path
-})
+const activeMenu = computed(() => route.path)
 
-// 处理菜单选择
 const handleMenuSelect = (index) => {
   router.push(index)
 }
+
+onMounted(async () => {
+  console.log('[App] window.electron:', window.electron)
+  console.log('[App] isElectron:', window.electron?.isElectron)
+  await appStore.fetchLibraryInfo()
+  if (appStore.libraryInitialized) {
+    appStore.fetchPendingCount()
+  }
+})
 </script>
 
 <style>
@@ -70,8 +103,7 @@ const handleMenuSelect = (index) => {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-    'Noto Color Emoji';
+    'Noto Sans', sans-serif;
   background: #f5f7fa;
   min-height: 100vh;
   color: #2c3e50;
@@ -95,7 +127,6 @@ body {
   color: #ffffff;
   padding: 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  border-bottom: 1px solid #34495e;
 }
 
 .header-content {
@@ -108,38 +139,10 @@ body {
   justify-content: space-between;
 }
 
-.user-section {
-  margin-left: 24px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #ecf0f1;
-  cursor: pointer;
-  padding: 8px 16px;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.user-info:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
-
-.dropdown-icon {
-  font-size: 12px;
-  margin-left: 4px;
-}
-
 .logo-section {
   display: flex;
   align-items: center;
   gap: 12px;
-  cursor: pointer;
   transition: opacity 0.2s;
 }
 
@@ -157,7 +160,6 @@ body {
   font-weight: 600;
   color: #ffffff;
   margin: 0;
-  letter-spacing: 0.5px;
 }
 
 .nav-menu {
@@ -170,25 +172,6 @@ body {
 .header-menu {
   background: transparent;
   border-bottom: none;
-}
-
-/* 确保所有菜单项都能直接显示，防止被折叠 */
-.header-menu :deep(.el-menu--horizontal) {
-  overflow: visible;
-  white-space: nowrap;
-}
-
-.header-menu :deep(.el-menu-item) {
-  display: inline-flex !important;
-  visibility: visible !important;
-  opacity: 1 !important;
-}
-
-/* 确保第三个菜单项（标签管理）也能显示 */
-.header-menu :deep(.el-menu-item:nth-child(3)) {
-  display: inline-flex !important;
-  visibility: visible !important;
-  opacity: 1 !important;
 }
 
 .header-menu .el-menu-item {
@@ -213,6 +196,14 @@ body {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.nav-badge {
+  margin-left: 6px;
+}
+
+.nav-badge :deep(.el-badge__content) {
+  font-size: 11px;
+}
+
 .app-main {
   flex: 1;
   padding: 32px;
@@ -224,20 +215,20 @@ body {
   margin: 0 auto;
 }
 
-/* 响应式设计 */
+.setup-redirect {
+  min-height: 100vh;
+}
+
 @media (max-width: 768px) {
   .app-main {
     padding: 20px;
   }
-
   .app-title {
     font-size: 18px;
   }
-
   .header-content {
     padding: 0 16px;
   }
-
   .header-menu .el-menu-item {
     padding: 0 12px;
     font-size: 13px;

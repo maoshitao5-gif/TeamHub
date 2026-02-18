@@ -1,29 +1,27 @@
 """
 应用配置模块
 使用 pydantic-settings 管理配置，支持环境变量
+支持 Electron 桌面应用环境
 """
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """应用配置类"""
 
-    # JWT 配置
-    secret_key: str
-    algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30 * 24 * 60  # 30天过期
+    # Electron 环境检测
+    is_electron: bool = os.getenv('ELECTRON_APP', 'false').lower() == 'true'
+    user_data_dir: str = os.getenv('USER_DATA_DIR', '.')
 
-    # 文件存储配置
-    storage_dir: str = "storage"
-
-    # 数据库配置
-    database_url: str = "sqlite:///./teamhub.db"
+    # 文件库路径（用户选择的文件库根目录）
+    # 首次启动时为空，用户通过设置页面选择后写入 config.json
+    library_path: Optional[str] = None
 
     # CORS 配置
-    allowed_origins: List[str] = [
+    _base_allowed_origins: List[str] = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
@@ -37,20 +35,63 @@ class Settings(BaseSettings):
         "http://localhost:8080",
     ]
 
-    # 默认管理员配置
-    default_admin_username: str = "admin"
-    default_admin_password: str = "admin123"
+    @property
+    def allowed_origins(self) -> List[str]:
+        """获取允许的 CORS 源列表"""
+        origins = self._base_allowed_origins.copy()
+        if self.is_electron:
+            for port in range(8001, 8011):
+                origins.extend([
+                    f"http://127.0.0.1:{port}",
+                    f"http://localhost:{port}",
+                ])
+        return origins
 
-    # 文件上传限制
+    # 文件大小限制（单文件）
     max_file_size: int = 1024 * 1024 * 1024  # 1GB
-    allowed_file_extensions: List[str] = []  # 空列表表示允许所有类型
+
+    # 默认收纳方式: move / copy / index
+    default_storage_mode: str = "move"
+
+    # 版本保留策略
+    max_versions: int = 0  # 0 = 不限制
+    max_version_age_days: int = 0  # 0 = 不限制
+
+    # 回收站自动清理天数
+    trash_auto_clean_days: int = 30
 
     # 日志配置
     log_level: str = "INFO"
-    log_file: str = "logs/teamhub.log"
+
+    @property
+    def database_url(self) -> str:
+        """获取数据库 URL — 数据库存放在文件库的 .teamhub/ 目录下"""
+        if self.library_path:
+            db_path = Path(self.library_path) / '.teamhub' / 'db.sqlite'
+            return f"sqlite:///{db_path.resolve()}"
+        # 如果还没有设置文件库路径，使用 Electron user data 目录或当前目录
+        if self.is_electron:
+            db_path = Path(self.user_data_dir) / 'database' / 'teamhub.db'
+            return f"sqlite:///{db_path.resolve()}"
+        return "sqlite:///./teamhub.db"
+
+    @property
+    def log_file(self) -> str:
+        """获取日志文件路径"""
+        if self.is_electron:
+            return str(Path(self.user_data_dir) / 'logs' / 'teamhub.log')
+        return "logs/teamhub.log"
+
+    @property
+    def config_file(self) -> str:
+        """获取配置文件路径（用于持久化 library_path 等设置）"""
+        if self.library_path:
+            return str(Path(self.library_path) / '.teamhub' / 'config.json')
+        if self.is_electron:
+            return str(Path(self.user_data_dir) / 'config' / 'config.json')
+        return "config.json"
 
     model_config = SettingsConfigDict(
-        # 支持从多个位置读取 .env 文件（从当前目录向上查找）
         env_file=[".env", "../.env", "../../.env"],
         env_file_encoding="utf-8",
         case_sensitive=False,
@@ -61,24 +102,19 @@ class Settings(BaseSettings):
 # 创建全局配置实例
 try:
     settings = Settings()
+
+    if settings.is_electron:
+        print(f"[Config] Running in Electron mode")
+        print(f"[Config] User data directory: {settings.user_data_dir}")
+        print(f"[Config] Database URL: {settings.database_url}")
+        print(f"[Config] Log file: {settings.log_file}")
+    else:
+        print(f"[Config] Running in standard mode")
+
 except Exception as e:
-    # 如果缺少必需的环境变量，提供友好的错误提示
     import sys
     print(f"配置错误: {e}")
-    print("\n请创建 .env 文件并设置以下必需的环境变量：")
-    print("  SECRET_KEY=your-secret-key-here")
-    print("\n可选的环境变量：")
-    print("  DATABASE_URL=sqlite:///./teamhub.db")
-    print("  STORAGE_DIR=storage")
-    print("  LOG_LEVEL=INFO")
     sys.exit(1)
 
-# 为了向后兼容，保留旧的常量名称
-SECRET_KEY = settings.secret_key
-ALGORITHM = settings.algorithm
-ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
-STORAGE_DIR = Path(settings.storage_dir)
-STORAGE_DIR.mkdir(exist_ok=True, parents=True)
+# 向后兼容
 ALLOWED_ORIGINS = settings.allowed_origins
-DEFAULT_ADMIN_USERNAME = settings.default_admin_username
-DEFAULT_ADMIN_PASSWORD = settings.default_admin_password

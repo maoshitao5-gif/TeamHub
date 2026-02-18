@@ -8,7 +8,9 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import traceback
 
-from backend.app.config import ALLOWED_ORIGINS
+from backend.app.config import settings
+
+ALLOWED_ORIGINS = settings.allowed_origins
 from backend.app.core.encoding import safe_str, safe_print
 
 

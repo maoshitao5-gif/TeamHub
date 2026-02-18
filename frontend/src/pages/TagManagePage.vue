@@ -68,6 +68,16 @@
               创建标签
             </el-button>
             <el-button
+              type="warning"
+              :disabled="selectedTags.length < 2"
+              @click="openMergeDialog"
+              size="small"
+            >
+              <el-icon><Connection /></el-icon>
+              合并标签
+              <el-badge v-if="selectedTags.length >= 2" :value="selectedTags.length" class="badge-inline" />
+            </el-button>
+            <el-button
               type="danger"
               :disabled="selectedTags.length === 0"
               @click="handleBatchDeleteTags"
@@ -166,6 +176,93 @@
       </el-table>
     </el-card>
 
+    <!-- 合并标签对话框 -->
+    <el-dialog
+      v-model="showMergeDialog"
+      title="合并标签"
+      width="520px"
+      :close-on-click-modal="false"
+    >
+      <div class="merge-info">
+        <el-alert type="info" :closable="false" show-icon>
+          <template #title>
+            将以下标签合并为一个，所有关联文件将转移到目标标签下，源标签将被删除。
+          </template>
+        </el-alert>
+      </div>
+
+      <div class="merge-tags-list">
+        <div class="merge-section-label">选中的标签</div>
+        <div class="merge-tag-items">
+          <el-tag
+            v-for="tag in mergeSelectedTagObjects"
+            :key="tag.id"
+            :type="tag.id === mergeTargetId ? 'success' : 'info'"
+            size="large"
+            class="merge-tag-item"
+          >
+            <el-icon v-if="tag.id === mergeTargetId"><Check /></el-icon>
+            {{ tag.name }}
+            <span class="merge-tag-count">（{{ tag.file_count }} 个文件）</span>
+          </el-tag>
+        </div>
+      </div>
+
+      <el-form label-width="100px" style="margin-top: 20px;">
+        <el-form-item label="合并目标">
+          <el-select
+            v-model="mergeTargetId"
+            placeholder="选择保留的目标标签"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="tag in mergeSelectedTagObjects"
+              :key="tag.id"
+              :label="tag.name + '（' + tag.file_count + ' 个文件）'"
+              :value="tag.id"
+            />
+          </el-select>
+          <div class="form-tip">其他标签将合并到此标签，合并后只保留目标标签</div>
+        </el-form-item>
+      </el-form>
+
+      <div v-if="mergeTargetId" class="merge-preview">
+        <div class="merge-section-label">合并预览</div>
+        <div class="merge-preview-content">
+          <div class="merge-preview-sources">
+            <el-tag
+              v-for="tag in mergeSourceTags"
+              :key="tag.id"
+              type="danger"
+              effect="light"
+              size="default"
+              class="merge-preview-tag"
+            >
+              {{ tag.name }}
+            </el-tag>
+          </div>
+          <el-icon class="merge-arrow"><Right /></el-icon>
+          <el-tag type="success" size="default" class="merge-preview-tag">
+            {{ mergeTargetTag?.name }}
+          </el-tag>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="showMergeDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            @click="handleMergeTags"
+            :loading="mergeLoading"
+            :disabled="!mergeTargetId"
+          >
+            确认合并
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 创建标签对话框 -->
     <el-dialog 
       v-model="showCreateTagDialog" 
@@ -199,8 +296,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { PriceTag, Document, Refresh, Plus, Delete, DataAnalysis, View, Edit } from '@element-plus/icons-vue'
-import { getTagsStats, createTag, updateTag, deleteTag, batchDeleteTags } from '@/api/file'
+import { PriceTag, Document, Refresh, Plus, Delete, DataAnalysis, View, Edit, Connection, Check, Right } from '@element-plus/icons-vue'
+import { getTags, createTag, updateTag, deleteTag, mergeTags } from '@/api/tag'
 
 const router = useRouter()
 
@@ -243,10 +340,15 @@ const tableRowClassName = ({ row, rowIndex }) => {
 const loadTags = async () => {
   loading.value = true
   try {
-    const result = await getTagsStats()
-    tagStats.value = result.tags || []
-    totalTags.value = result.total || 0
-    totalFiles.value = result.total_files || 0
+    const tags = await getTags()
+    tagStats.value = (tags || []).map(t => ({
+      ...t,
+      file_count: t.document_count || 0,
+      editing: false,
+      editName: ''
+    }))
+    totalTags.value = tagStats.value.length
+    totalFiles.value = tagStats.value.reduce((sum, t) => sum + (t.document_count || 0), 0)
   } catch (error) {
     console.error('加载标签统计失败:', error)
     ElMessage.error('加载标签统计失败')
@@ -258,7 +360,7 @@ const loadTags = async () => {
 // 查看该标签关联的文件
 const viewFilesByTag = (tagName) => {
   router.push({
-    path: '/files',
+    path: '/library',
     query: { tag: tagName }
   })
 }
@@ -283,7 +385,7 @@ const handleSaveTag = async (row) => {
   }
   
   try {
-    await updateTag(row.id, row.editName.trim())
+    await updateTag(row.id, { name: row.editName.trim() })
     ElMessage.success('标签更新成功')
     row.name = row.editName.trim()
     row.editing = false
@@ -335,7 +437,7 @@ const handleBatchDeleteTags = async () => {
       }
     )
     
-    await batchDeleteTags(selectedTags.value)
+    await Promise.all(selectedTags.value.map(id => deleteTag(id)))
     ElMessage.success('批量删除成功')
     selectedTags.value = []
     loadTags()
@@ -354,13 +456,89 @@ const handleCreateTag = async () => {
   }
   
   try {
-    await createTag(createTagForm.value.name.trim())
+    await createTag({ name: createTagForm.value.name.trim() })
     ElMessage.success('标签创建成功')
     showCreateTagDialog.value = false
     createTagForm.value.name = ''
     loadTags()
   } catch (error) {
     console.error('创建标签失败:', error)
+  }
+}
+
+// ========== 合并标签 ==========
+const showMergeDialog = ref(false)
+const mergeLoading = ref(false)
+const mergeTargetId = ref('')
+
+// 选中的标签对象列表
+const mergeSelectedTagObjects = computed(() => {
+  return tagStats.value.filter(t => selectedTags.value.includes(t.id))
+})
+
+// 目标标签对象
+const mergeTargetTag = computed(() => {
+  return mergeSelectedTagObjects.value.find(t => t.id === mergeTargetId.value)
+})
+
+// 源标签（排除目标）
+const mergeSourceTags = computed(() => {
+  return mergeSelectedTagObjects.value.filter(t => t.id !== mergeTargetId.value)
+})
+
+const openMergeDialog = () => {
+  if (selectedTags.value.length < 2) {
+    ElMessage.warning('请至少选择 2 个标签进行合并')
+    return
+  }
+  // 默认选择关联文件最多的标签作为目标
+  const sorted = [...mergeSelectedTagObjects.value].sort((a, b) => b.file_count - a.file_count)
+  mergeTargetId.value = sorted[0]?.id || ''
+  showMergeDialog.value = true
+}
+
+const handleMergeTags = async () => {
+  if (!mergeTargetId.value) {
+    ElMessage.warning('请选择目标标签')
+    return
+  }
+
+  const sourceIds = selectedTags.value.filter(id => id !== mergeTargetId.value)
+  if (sourceIds.length === 0) {
+    ElMessage.warning('没有需要合并的源标签')
+    return
+  }
+
+  const targetName = mergeTargetTag.value?.name || ''
+  const sourceNames = mergeSourceTags.value.map(t => t.name).join('、')
+
+  try {
+    await ElMessageBox.confirm(
+      `确定将「${sourceNames}」合并到「${targetName}」吗？合并后源标签将被删除，其关联的文件将转移到目标标签。`,
+      '确认合并',
+      {
+        confirmButtonText: '确认合并',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+
+    mergeLoading.value = true
+    await mergeTags({
+      source_tag_ids: sourceIds,
+      target_tag_id: mergeTargetId.value,
+    })
+    ElMessage.success(`已将 ${sourceIds.length} 个标签合并到「${targetName}」`)
+    showMergeDialog.value = false
+    selectedTags.value = []
+    loadTags()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('合并标签失败:', error)
+      ElMessage.error(error.message || '合并标签失败')
+    }
+  } finally {
+    mergeLoading.value = false
   }
 }
 
@@ -645,6 +823,76 @@ onMounted(() => {
 :deep(.el-dialog__footer) {
   padding: 16px 20px 20px;
   border-top: 1px solid #e4e7ed;
+}
+
+/* 合并标签对话框 */
+.merge-info {
+  margin-bottom: 20px;
+}
+
+.merge-section-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 10px;
+}
+
+.merge-tags-list {
+  margin-bottom: 8px;
+}
+
+.merge-tag-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.merge-tag-item {
+  font-size: 14px;
+}
+
+.merge-tag-count {
+  font-size: 12px;
+  color: #909399;
+  margin-left: 2px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.merge-preview {
+  margin-top: 20px;
+  padding: 16px;
+  background: #fafbfc;
+  border-radius: 8px;
+  border: 1px solid #e4e7ed;
+}
+
+.merge-preview-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.merge-preview-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.merge-preview-tag {
+  font-size: 13px;
+}
+
+.merge-arrow {
+  font-size: 20px;
+  color: #909399;
+  flex-shrink: 0;
 }
 
 /* 响应式设计 */

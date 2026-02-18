@@ -5,10 +5,22 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+// 获取 API 基础 URL
+// 优先使用 Electron 环境提供的 URL，否则使用默认值
+const getBaseURL = () => {
+  if (window.electron?.apiBaseURL) {
+    console.log('[API] Using Electron API URL:', window.electron.apiBaseURL)
+    return window.electron.apiBaseURL
+  }
+  console.log('[API] Using default API URL: http://127.0.0.1:8001')
+  return 'http://127.0.0.1:8001'
+}
+
 // 创建 axios 实例
 const request = axios.create({
-  baseURL: 'http://127.0.0.1:8001',  // 直接调用后端，统一 BaseURL
+  baseURL: getBaseURL(),  // 支持 Electron 环境的动态 URL
   timeout: 30000,   // 30秒超时
+  proxy: false,     // 绕过系统代理，直连本地后端
   // 确保请求和响应都使用 UTF-8 编码
   headers: {
     'Content-Type': 'application/json; charset=utf-8'
