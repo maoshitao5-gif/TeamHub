@@ -5,11 +5,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import request from '@/api/request'
+import { setCloudApiUrl } from '@/api/cloud'
+import { getSyncStatus } from '@/api/sync'
 
 export const useAppStore = defineStore('app', () => {
   // 文件库信息
   const libraryPath = ref(null)
   const libraryInitialized = ref(false)
+  const pendingFolderName = ref('待整理')
 
   // 待整理数量（导航栏角标用）
   const pendingCount = ref(0)
@@ -20,7 +23,22 @@ export const useAppStore = defineStore('app', () => {
     max_versions: 0,
     max_version_age_days: 0,
     trash_auto_clean_days: 30,
+    max_file_size: 1073741824,
+    on_conflict: 'rename',
+    default_sort_by: 'updated_at',
+    default_sort_order: 'desc',
+    auto_scan_on_startup: false,
+    items_per_page: 15,
+    enable_floating_window: true,
+    library_show_flat_view: true,
+    library_show_tree_view: true,
   })
+
+  // 同步状态缓存（GET /api/sync/status 响应）
+  const syncStatus = ref(null)
+
+  // 当前绑定工作空间 ID
+  const activeWorkspaceId = computed(() => syncStatus.value?.workspace_id || null)
 
   // 是否需要显示初始化向导
   const needSetup = computed(() => !libraryInitialized.value)
@@ -32,6 +50,7 @@ export const useAppStore = defineStore('app', () => {
       libraryPath.value = data.path
       libraryInitialized.value = data.initialized
       pendingCount.value = data.pending_count
+      if (data.pending_folder_name) pendingFolderName.value = data.pending_folder_name
     } catch (e) {
       console.error('Failed to fetch library info:', e)
     }
@@ -54,6 +73,7 @@ export const useAppStore = defineStore('app', () => {
       settings.value = data
       libraryPath.value = data.library_path
       libraryInitialized.value = !!data.library_path
+      if (data.cloud_api_url) setCloudApiUrl(data.cloud_api_url)
     } catch (e) {
       console.error('Failed to fetch settings:', e)
     }
@@ -73,16 +93,29 @@ export const useAppStore = defineStore('app', () => {
     Object.assign(settings.value, updates)
   }
 
+  // 获取同步状态
+  async function fetchSyncStatus() {
+    try {
+      syncStatus.value = await getSyncStatus()
+    } catch (e) {
+      // 静默失败
+    }
+  }
+
   return {
     libraryPath,
     libraryInitialized,
     pendingCount,
+    pendingFolderName,
     settings,
     needSetup,
+    syncStatus,
+    activeWorkspaceId,
     fetchLibraryInfo,
     fetchPendingCount,
     fetchSettings,
     setupLibrary,
     updateSettings,
+    fetchSyncStatus,
   }
 })

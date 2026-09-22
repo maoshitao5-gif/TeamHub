@@ -102,7 +102,8 @@
       </template>
 
       <el-table
-        :data="tagStats"
+        ref="tableRef"
+        :data="pagedTagStats"
         stripe
         style="width: 100%"
         :empty-text="loading ? '加载中...' : '暂无标签'"
@@ -174,6 +175,17 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 分页 -->
+      <div class="pagination-bar" v-if="totalTags > pageSize">
+        <el-pagination
+          v-model:current-page="currentPage"
+          :page-size="pageSize"
+          :total="totalTags"
+          layout="total, prev, pager, next, jumper"
+          @current-change="handlePageChange"
+        />
+      </div>
     </el-card>
 
     <!-- 合并标签对话框 -->
@@ -293,11 +305,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { PriceTag, Document, Refresh, Plus, Delete, DataAnalysis, View, Edit, Connection, Check, Right } from '@element-plus/icons-vue'
 import { getTags, createTag, updateTag, deleteTag, mergeTags } from '@/api/tag'
+import { useAppStore } from '@/stores/app'
+
+const appStore = useAppStore()
 
 const router = useRouter()
 
@@ -305,7 +320,29 @@ const tagStats = ref([])
 const loading = ref(false)
 const totalTags = ref(0)
 const totalFiles = ref(0)
-const selectedTags = ref([])
+const selectedTags = ref([])  // 存储已选中标签的 ID（跨页保留）
+const currentPage = ref(1)
+const pageSize = computed(() => appStore.settings.items_per_page || 15)
+const tableRef = ref(null)
+
+// 当前页的标签切片
+const pagedTagStats = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return tagStats.value.slice(start, start + pageSize.value)
+})
+
+const handlePageChange = (page) => {
+  currentPage.value = page
+  // 翻页后恢复当前页已选行的视觉状态
+  nextTick(() => {
+    if (!tableRef.value) return
+    pagedTagStats.value.forEach(row => {
+      if (selectedTags.value.includes(row.id)) {
+        tableRef.value.toggleRowSelection(row, true)
+      }
+    })
+  })
+}
 const showCreateTagDialog = ref(false)
 const createTagForm = ref({ name: '' })
 
@@ -340,7 +377,13 @@ const tableRowClassName = ({ row, rowIndex }) => {
 const loadTags = async () => {
   loading.value = true
   try {
-    const tags = await getTags()
+    // 请求包含统计信息的标签列表
+    const response = await getTags(true)
+    
+    // 处理API响应格式（包含 tags 和 total_unique_documents）
+    const tags = response?.tags || []
+    const totalUniqueDocs = response?.total_unique_documents ?? null
+    
     tagStats.value = (tags || []).map(t => ({
       ...t,
       file_count: t.document_count || 0,
@@ -348,7 +391,16 @@ const loadTags = async () => {
       editName: ''
     }))
     totalTags.value = tagStats.value.length
-    totalFiles.value = tagStats.value.reduce((sum, t) => sum + (t.document_count || 0), 0)
+    currentPage.value = 1  // 每次重新加载后回到第一页
+    selectedTags.value = []  // 数据刷新后清空跨页选中
+    
+    // 使用API返回的总唯一文档数
+    if (totalUniqueDocs !== null) {
+      totalFiles.value = totalUniqueDocs
+    } else {
+      // 回退到求和方式（不应该发生，但为了安全）
+      totalFiles.value = tagStats.value.reduce((sum, t) => sum + (t.document_count || 0), 0)
+    }
   } catch (error) {
     console.error('加载标签统计失败:', error)
     ElMessage.error('加载标签统计失败')
@@ -365,9 +417,14 @@ const viewFilesByTag = (tagName) => {
   })
 }
 
-// 处理标签选择变化
+// 处理标签选择变化（跨页合并：只更新当前页对应的选中项）
 const handleTagSelectionChange = (selection) => {
-  selectedTags.value = selection.map(tag => tag.id)
+  const currentPageIds = pagedTagStats.value.map(t => t.id)
+  const nowSelectedIds = selection.map(t => t.id)
+  selectedTags.value = [
+    ...selectedTags.value.filter(id => !currentPageIds.includes(id)),
+    ...nowSelectedIds,
+  ]
 }
 
 // 编辑标签
@@ -893,6 +950,13 @@ onMounted(() => {
   font-size: 20px;
   color: #909399;
   flex-shrink: 0;
+}
+
+/* 分页栏 */
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 0 4px;
 }
 
 /* 响应式设计 */

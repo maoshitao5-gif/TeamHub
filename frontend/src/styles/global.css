@@ -9,52 +9,56 @@
   --color-primary: #2c3e50;
   --color-primary-dark: #34495e;
   --color-primary-light: #ecf0f1;
-  
-  /* 强调色 - 深蓝色 */
-  --color-accent: #1e88e5;
-  --color-accent-dark: #1565c0;
-  --color-accent-light: #e3f2fd;
-  
+
+  /* 强调色 - 统一蓝色（替代原 #1e88e5，与 Element Plus 一致） */
+  --color-accent: #4096ff;
+  --color-accent-dark: #2878ff;
+  --color-accent-light: #ecf5ff;
+
   /* 成功色 - 深绿色 */
   --color-success: #2e7d32;
   --color-success-dark: #1b5e20;
   --color-success-light: #e8f5e9;
-  
+
   /* 危险色 - 深红色 */
   --color-danger: #c62828;
   --color-danger-dark: #b71c1c;
   --color-danger-light: #ffebee;
-  
+
   /* 警告色 - 深橙色 */
   --color-warning: #f57c00;
   --color-warning-dark: #e65100;
   --color-warning-light: #fff3e0;
-  
+
   /* 中性色 */
   --color-text-primary: #2c3e50;
   --color-text-secondary: #34495e;
   --color-text-tertiary: #7f8c8d;
   --color-text-disabled: #95a5a6;
-  
+
   /* 背景色 */
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f8f9fa;
   --color-bg-tertiary: #f5f7fa;
-  
+
   /* 边框色 */
   --color-border: #e4e7ed;
   --color-border-light: #f0f0f0;
   --color-border-dark: #d0d7de;
-  
-  /* 阴影 */
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+
+  /* 升级后的阴影体系 */
+  --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.05), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --shadow-md:    0 1px 4px rgba(0, 0, 0, 0.06), 0 4px 14px rgba(0, 0, 0, 0.07);
+  --shadow-lg:    0 2px 8px rgba(0, 0, 0, 0.07), 0 8px 24px rgba(0, 0, 0, 0.10);
+  --shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.06);
+
+  /* 标准过渡 */
+  --transition-base: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ========== 全局按钮样式 ========== */
 .el-button {
-  border-radius: 6px;
+  border-radius: 7px;
   font-weight: 500;
   transition: all 0.2s ease;
   padding: 8px 16px;
@@ -117,7 +121,7 @@
 /* ========== 卡片样式 ========== */
 .el-card {
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: var(--shadow-md);
 }
 
@@ -167,9 +171,9 @@
   background: var(--color-bg-tertiary);
 }
 
-/* ========== 标签样式 ========== */
+/* ========== 标签样式（胶囊形，更现代） ========== */
 .el-tag {
-  border-radius: 4px;
+  border-radius: 20px;
   font-size: 12px;
   padding: 4px 10px;
   font-weight: 500;
@@ -177,7 +181,7 @@
 
 /* ========== 对话框样式 ========== */
 .el-dialog {
-  border-radius: 8px;
+  border-radius: 10px;
 }
 
 .el-dialog__header {
@@ -247,20 +251,20 @@
   color: var(--color-accent);
 }
 
-/* ========== 滚动条样式 ========== */
+/* ========== 滚动条样式（更精致） ========== */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
   background: var(--color-bg-secondary);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--color-border-dark);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {

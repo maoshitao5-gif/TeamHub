@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import Document, Version
+from backend.app.models import Version
 from backend.app.config import settings
-from backend.app.core.file_utils import calculate_sha256
+from backend.app.core.file_utils import calculate_sha256, get_document_or_404
 from backend.app.core.logger import get_logger
+from backend.app.core.changelog import record_change
 from backend.app.api.schemas import VersionCreate, VersionResponse
 
 logger = get_logger("api.versions")
@@ -41,9 +42,7 @@ def _compute_hash_background(version_id: str, file_path: str):
 @router.get("", response_model=list[VersionResponse])
 def list_versions(document_id: str, db: Session = Depends(get_db)):
     """获取文档的所有版本"""
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(404, "文档不存在")
+    get_document_or_404(db, document_id)
 
     versions = db.query(Version).filter(
         Version.document_id == document_id
@@ -60,9 +59,7 @@ def add_version(
     db: Session = Depends(get_db)
 ):
     """为文档添加新版本"""
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(404, "文档不存在")
+    doc = get_document_or_404(db, document_id)
 
     source = Path(req.file_path)
     if not source.exists():
@@ -121,11 +118,32 @@ def add_version(
         is_current=True
     )
     db.add(version)
+    record_change(db, "version", version.id, "create", {
+        "document_id": document_id, "version_number": new_version_number
+    })
     db.commit()
     db.refresh(version)
 
     # 后台计算哈希
     background_tasks.add_task(_compute_hash_background, version.id, new_file_path)
+
+    # 版本数限制：若超出 max_versions，删除最旧的非当前版本
+    if settings.max_versions > 0:
+        all_versions = db.query(Version).filter(
+            Version.document_id == document_id
+        ).order_by(Version.version_number.desc()).all()
+        if len(all_versions) > settings.max_versions:
+            to_delete = [v for v in all_versions[settings.max_versions:] if not v.is_current]
+            for v in to_delete:
+                try:
+                    file_path = Path(v.file_path)
+                    if file_path.exists() and '.versions' in str(file_path):
+                        file_path.unlink()
+                except OSError as e:
+                    logger.warning(f"删除超额版本文件失败: {e}")
+                db.delete(v)
+                logger.info(f"超出版本数限制，删除版本 v{v.version_number}（文档 {document_id}）")
+            db.commit()
 
     return version
 
@@ -133,9 +151,7 @@ def add_version(
 @router.post("/{version_id}/restore")
 def restore_version(document_id: str, version_id: str, db: Session = Depends(get_db)):
     """恢复某个版本为当前版本"""
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(404, "文档不存在")
+    doc = get_document_or_404(db, document_id)
 
     target_version = db.query(Version).filter(
         Version.id == version_id,
@@ -171,6 +187,9 @@ def restore_version(document_id: str, version_id: str, db: Session = Depends(get
                 shutil.copy2(str(old_path), str(current_path))
                 target_version.file_path = str(current_path)
 
+    record_change(db, "version", target_version.id, "update", {
+        "document_id": document_id, "restored_to_version": target_version.version_number
+    })
     db.commit()
     return {"message": f"已恢复到版本 v{target_version.version_number}"}
 
@@ -193,6 +212,7 @@ def delete_version(document_id: str, version_id: str, db: Session = Depends(get_
     if file_path.exists() and '.versions' in str(file_path):
         file_path.unlink()
 
+    record_change(db, "version", version.id, "delete", {"document_id": document_id})
     db.delete(version)
     db.commit()
     return {"message": "版本已删除"}

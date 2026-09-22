@@ -1,6 +1,6 @@
 """
 文件处理工具模块
-包含文件哈希计算、文件夹处理等功能
+包含文件哈希计算、文件夹处理、常用查询辅助等功能
 """
 import os
 import hashlib
@@ -8,7 +8,27 @@ import zipfile
 import tempfile
 from pathlib import Path
 
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
 from backend.app.core.encoding import safe_print
+
+
+def get_library_path() -> Path:
+    """获取已验证的文件库路径，未初始化时抛 400"""
+    from backend.app.config import settings  # 延迟导入，避免循环
+    if not settings.library_path:
+        raise HTTPException(400, "文件库未初始化")
+    return Path(settings.library_path)
+
+
+def get_document_or_404(db: Session, doc_id: str):
+    """按 ID 获取文档，不存在时抛 404"""
+    from backend.app.models import Document  # 延迟导入，避免循环
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(404, "文档不存在")
+    return doc
 
 
 def calculate_sha256(file_path: str) -> str:

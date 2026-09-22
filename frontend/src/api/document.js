@@ -1,5 +1,12 @@
 /**
- * 文档 API
+ * 文档 API（对应后端 /api/documents 路由）
+ *
+ * 覆盖功能：
+ *   收纳 / 快速放入待整理 / 搜索 / 自动补全 / 详情
+ *   更新信息 / 更新标签 / 整理 / 移回待整理 / 删除 / 恢复
+ *   批量整理 / 批量更新标签 / 批量删除 / 批量恢复
+ *   版本合并 / 分析待整理 / 重定位 / 撤销放入 / 重复检测
+ *   文档目录列表（用于左侧目录树）/ 获取文档下的目录
  */
 import request from './request'
 
@@ -16,6 +23,11 @@ export function quickAddToPending(data) {
 // 搜索文档
 export function searchDocuments(params) {
   return request.post('/api/documents/search', params)
+}
+
+// 文档名称自动补全（搜索框实时联想）
+export function autocompleteDocuments(q, limit = 10) {
+  return request.get('/api/documents/autocomplete', { params: { q, limit } })
 }
 
 // 获取文档详情
@@ -36,6 +48,11 @@ export function updateDocumentTags(id, tagNames) {
 // 整理文档（从待整理移入文件库）
 export function organizeDocument(id, data) {
   return request.post(`/api/documents/${id}/organize`, data)
+}
+
+// 移回待整理（从文档库移回待整理区）
+export function moveToPending(id) {
+  return request.post(`/api/documents/${id}/move-to-pending`)
 }
 
 // 删除文档
@@ -112,3 +129,32 @@ export function getDocumentFiles(documentId) {
 export function relocateDocument(id, newPath) {
   return request.post(`/api/documents/${id}/relocate`, { new_path: newPath })
 }
+
+// 撤销放入待整理（移回原始路径）
+export function undoPending(id) {
+  return request.post(`/api/documents/${id}/undo-pending`)
+}
+
+// 单文件查重（file_path 或 sha256_hash 二选一，可附带 exclude_doc_id）
+export function checkFileDuplicate(filePath) {
+  return request.post('/api/documents/check-duplicate', { file_path: filePath })
+}
+
+// 按 sha256 直接查重（云端导入时用，无需本地文件路径）
+export function checkHashDuplicate(sha256Hash) {
+  return request.post('/api/documents/check-duplicate', { sha256_hash: sha256Hash })
+}
+
+// 按文档 ID 查重：取该文档当前版本的 sha256，检查是否有其他文档内容相同
+export function checkDocLibraryDuplicate(docId) {
+  return request.get(`/api/documents/${docId}/check-library-duplicate`)
+}
+
+// 文件夹（不打散模式）查重：后端批量扫描文件夹内所有文件，返回重复数量
+export function checkFolderDuplicates(folderPath) {
+  return request.post('/api/documents/check-folder-duplicates', { folder_path: folderPath })
+}
+
+// 获取数据库中有文档的目录列表（用于 LibraryTreePanel 导航）
+export const getDocumentDirs = (parent = '') =>
+  request.get('/api/documents/dirs', { params: { parent } })

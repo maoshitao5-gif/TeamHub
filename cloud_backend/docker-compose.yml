@@ -1,0 +1,46 @@
+version: "3.9"
+
+# ── TeamHub 云服务本地开发环境 ──
+# 包含：云服务 API + MinIO（模拟阿里云 OSS）+ PostgreSQL（可选）
+#
+# 启动：docker-compose up -d
+# 停止：docker-compose down
+
+services:
+  # ── 云服务 API ──
+  cloud-api:
+    build: .
+    container_name: teamhub-cloud-api
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    env_file:
+      - .env.dev
+    depends_on:
+      - minio
+    networks:
+      - teamhub-net
+
+  # ── MinIO（本地 S3 兼容对象存储，模拟阿里云 OSS）──
+  minio:
+    image: minio/minio:latest
+    container_name: teamhub-minio
+    restart: unless-stopped
+    ports:
+      - "9001:9000"    # S3 API 端口
+      - "9002:9001"    # MinIO Web 控制台
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - teamhub-net
+
+volumes:
+  minio-data:
+
+networks:
+  teamhub-net:
+    driver: bridge

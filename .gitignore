@@ -25,45 +25,51 @@ wheels/
 dist/teamhub-backend*
 build/teamhub-backend/
 
-# 数据库文件
+# 鏁版嵁搴撴枃浠?
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
-# 存储目录（文件上传后存储的位置）
+# 瀛樺偍鐩綍锛堟枃浠朵笂浼犲悗瀛樺偍鐨勪綅缃級
 storage/
 !storage/.gitkeep
 
 # IDE
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 *~
 
-# 操作系统
+# 鎿嶄綔绯荤粺
 .DS_Store
 Thumbs.db
 
-# 日志文件
+# 鏃ュ織鏂囦欢
 *.log
 logs/
 
-# 环境变量（重要！不要提交到 Git）
+# 鐜鍙橀噺锛堥噸瑕侊紒涓嶈鎻愪氦鍒?Git锛?
 .env
+.env.dev
+.env.production
+.env.local
 
-# 测试
+# 娴嬭瘯
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# 临时文件
+# 涓存椂鏂囦欢
 *.tmp
 temp/
 tmp/
 
-# 前端
+# 鍓嶇
 node_modules/
 frontend/dist/
 *.local
@@ -79,3 +85,10 @@ out/
 
 # Electron build cache
 electron-builder-cache/
+
+# MinIO 鏈湴鏁版嵁锛堜笉鎻愪氦锛?
+minio-data/
+tools/
+config.json
+# 早期本地配置文件（含存储访问凭据）
+配置文件

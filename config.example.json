@@ -1,0 +1,8 @@
+{
+  "library_path": "C:/path/to/your/TeamHubLibrary",
+  "oss_endpoint": "http://127.0.0.1:9000",
+  "oss_access_key_id": "YOUR_OSS_ACCESS_KEY_ID",
+  "oss_access_key_secret": "YOUR_OSS_ACCESS_KEY_SECRET",
+  "oss_bucket_name": "teamhub",
+  "oss_prefix": "teamhub/"
+}

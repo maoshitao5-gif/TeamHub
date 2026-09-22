@@ -18,11 +18,11 @@
       </div>
     </div>
 
-    <!-- 批量操作栏 -->
-    <div class="batch-bar-top" v-if="selectedIds.length > 0">
+    <!-- 批量操作栏（底部固定，与 PendingPage 统一） -->
+    <div class="batch-bar" v-if="selectedIds.length > 0">
       <span>已选 {{ selectedIds.length }} 项</span>
       <el-button size="small" type="primary" @click="handleBatchRestore">批量恢复</el-button>
-      <el-button size="small" type="danger" @click="handleBatchDelete">批量删除</el-button>
+      <el-button size="small" type="danger" @click="handleBatchDelete">批量永久删除</el-button>
     </div>
 
     <!-- 文档列表 -->
@@ -35,22 +35,22 @@
         >
           <el-checkbox v-model="doc._selected" class="card-checkbox" />
           <div class="doc-icon">
-            <el-icon :size="28" :color="doc.is_folder ? '#e67e22' : getFileTypeColor(doc.name)">
+            <el-icon :size="22" :color="doc.is_folder ? '#e67e22' : getFileTypeColor(doc.name)">
               <Folder v-if="doc.is_folder" />
               <component v-else :is="fileIconComponent(doc.name)" />
             </el-icon>
           </div>
           <div class="doc-info">
             <div class="doc-name">{{ doc.name }}</div>
-            <div class="doc-meta">
-              <span v-if="doc.is_folder">{{ doc.file_count }} 个文件</span>
-              <span v-else>{{ formatFileSize(doc.total_size) }}</span>
-              <span class="meta-sep">·</span>
-              <span>删除于 {{ formatDateTime(doc.trashed_at || doc.updated_at) }}</span>
-            </div>
             <div class="doc-path" v-if="doc.storage_path">
               <span class="path-label">原位置：</span>{{ doc.storage_path }}
             </div>
+          </div>
+          <div class="doc-meta">
+            <span v-if="doc.is_folder">{{ doc.file_count }} 个文件</span>
+            <span v-else>{{ formatFileSize(doc.total_size) }}</span>
+            <span class="meta-sep">·</span>
+            <span>删除于 {{ formatDateTime(doc.trashed_at || doc.updated_at) }}</span>
           </div>
           <div class="doc-actions">
             <el-button size="small" type="primary" @click="handleRestore(doc)">恢复</el-button>
@@ -217,17 +217,21 @@ onMounted(() => {
   font-weight: 500;
 }
 
-.batch-bar-top {
-  background: #f5f7fa;
-  padding: 12px 20px;
-  border-radius: 8px;
-  margin-bottom: 16px;
+.batch-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #2c3e50;
+  color: #fff;
+  padding: 12px 32px;
+  border-radius: 0;
   display: flex;
   align-items: center;
   gap: 16px;
-  border: 1px solid #e4e7ed;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+  z-index: 100;
   font-size: 14px;
-  color: #2c3e50;
 }
 
 .trash-list {
@@ -237,25 +241,27 @@ onMounted(() => {
 .trash-card {
   display: flex;
   align-items: center;
-  padding: 14px 20px;
+  padding: 9px 16px;
   background: #fff;
   border-radius: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 5px;
   border: 1px solid #ebeef5;
-  transition: all 0.2s;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition-base);
 }
 
 .trash-card:hover {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  border-color: #d0d7de;
+  box-shadow: inset 3px 0 0 #e74c3c, var(--shadow-hover);
+  transform: translateY(-2px);
+  border-color: #fde8e8;
 }
 
 .card-checkbox {
-  margin-right: 12px;
+  margin-right: 10px;
 }
 
 .doc-icon {
-  margin-right: 14px;
+  margin-right: 12px;
   flex-shrink: 0;
 }
 
@@ -265,25 +271,30 @@ onMounted(() => {
 }
 
 .doc-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   color: #2c3e50;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .doc-meta {
-  font-size: 13px;
-  color: #95a5a6;
-  margin-top: 2px;
+  font-size: 12px;
+  color: #aab2bd;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin: 0 14px;
 }
 
 .meta-sep {
-  margin: 0 6px;
+  margin: 0 5px;
 }
 
 .doc-path {
   font-size: 12px;
   color: #bdc3c7;
-  margin-top: 4px;
+  margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -295,8 +306,8 @@ onMounted(() => {
 
 .doc-actions {
   display: flex;
-  gap: 8px;
-  margin-left: 12px;
+  gap: 6px;
+  margin-left: 4px;
   flex-shrink: 0;
 }
 

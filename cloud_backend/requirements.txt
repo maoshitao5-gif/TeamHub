@@ -1,0 +1,27 @@
+# Web 框架（fastapi 0.104+ 支持 pydantic v2）
+fastapi==0.104.1
+uvicorn==0.24.0
+gunicorn==21.2.0          # 生产环境多进程服务器
+
+# 数据库
+sqlalchemy==1.4.54
+alembic==1.7.7
+psycopg2-binary==2.9.8    # PostgreSQL 驱动（生产 RDS）
+
+# 认证
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1                 # passlib 1.7.4 兼容版本（>4.1 有 API 变更）
+python-jose[cryptography]==3.3.0
+email-validator==2.1.0
+
+# 配置管理（pydantic-settings 2.x 使用 pydantic v2，不依赖 PyYAML 5.x）
+pydantic-settings==2.3.4
+python-dotenv==1.0.0
+
+# OSS 存储（兼容 MinIO + 阿里云 OSS）
+boto3==1.23.10
+
+# 测试
+pytest==7.0.1
+pytest-asyncio==0.16.0
+httpx==0.22.0

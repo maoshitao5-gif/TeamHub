@@ -28,11 +28,27 @@ from backend.app.middleware.exception import (
 
 # API 路由
 from backend.app.api.documents import router as documents_router
-from backend.app.api.versions import router as versions_router
 from backend.app.api.tags import router as tags_router
 from backend.app.api.settings_api import router as settings_router
+from backend.app.api.sync import router as sync_router
+from backend.app.api.share import router as share_router
 
 logger = get_logger("main")
+
+
+def _apply_config(s, cfg: dict):
+    """将配置字典中的已知字段应用到 settings 对象"""
+    field_map = [
+        'default_storage_mode', 'max_versions', 'max_version_age_days',
+        'trash_auto_clean_days', 'max_file_size', 'on_conflict',
+        'default_sort_by', 'default_sort_order', 'auto_scan_on_startup',
+        'enable_floating_window', 'items_per_page',
+        'library_show_flat_view', 'library_show_tree_view',
+        'pending_folder_name', 'cloud_api_url',
+    ]
+    for key in field_map:
+        if key in cfg:
+            setattr(s, key, cfg[key])
 
 
 @asynccontextmanager
@@ -57,15 +73,20 @@ async def lifespan(app: FastAPI):
                     settings.library_path = lib_path
                     logger.info(f"Restored library path: {lib_path}")
 
-                    # 恢复其他设置
-                    if 'default_storage_mode' in saved_config:
-                        settings.default_storage_mode = saved_config['default_storage_mode']
-                    if 'max_versions' in saved_config:
-                        settings.max_versions = saved_config['max_versions']
-                    if 'max_version_age_days' in saved_config:
-                        settings.max_version_age_days = saved_config['max_version_age_days']
-                    if 'trash_auto_clean_days' in saved_config:
-                        settings.trash_auto_clean_days = saved_config['trash_auto_clean_days']
+                    # 优先从库目录的 config.json 读取完整设置
+                    library_config_path = Path(lib_path) / '.teamhub' / 'config.json'
+                    if library_config_path.exists():
+                        try:
+                            with open(library_config_path, 'r', encoding='utf-8') as lf:
+                                lib_cfg = json.load(lf)
+                            _apply_config(settings, lib_cfg)
+                            logger.info("Loaded settings from library config")
+                        except Exception as le:
+                            logger.warning(f"Failed to load library config, falling back: {le}")
+                            _apply_config(settings, saved_config)
+                    else:
+                        # 兼容旧版：从 bootstrap config 读取
+                        _apply_config(settings, saved_config)
     except Exception as e:
         logger.warning(f"Failed to load saved config: {e}")
 
@@ -81,6 +102,35 @@ async def lifespan(app: FastAPI):
                 logger.info(f"启动时自动清理了 {cleaned} 个过期回收站文档")
         except Exception as e:
             logger.warning(f"回收站自动清理失败: {e}")
+
+    # 启动时自动扫描文件库
+    if settings.library_path and settings.auto_scan_on_startup:
+        try:
+            from backend.app.database import SessionLocal
+            from backend.app.models import Document
+            import os as _os
+            db = SessionLocal()
+            try:
+                from pathlib import Path as _Path
+                library = _Path(settings.library_path)
+                docs = db.query(Document).filter(Document.status.in_(["organized", "pending"])).all()
+                missing_count = 0
+                for doc in docs:
+                    if doc.storage_mode == "index":
+                        check_path = doc.original_path
+                    elif doc.storage_path:
+                        check_path = str(library / doc.storage_path)
+                    else:
+                        continue
+                    if check_path and not _os.path.exists(check_path):
+                        doc.status = "missing"
+                        missing_count += 1
+                db.commit()
+                logger.info(f"启动时自动扫描完成：共 {len(docs)} 个文档，{missing_count} 个缺失")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"启动时自动扫描失败: {e}")
 
     logger.info("TeamHub 启动完成")
     if settings.library_path:
@@ -120,9 +170,10 @@ app.add_exception_handler(Exception, general_exception_handler)
 
 # 注册路由
 app.include_router(documents_router)
-app.include_router(versions_router)
 app.include_router(tags_router)
 app.include_router(settings_router)
+app.include_router(sync_router)
+app.include_router(share_router)
 
 
 @app.get("/api/health")

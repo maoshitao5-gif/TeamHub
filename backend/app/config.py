@@ -53,12 +53,34 @@ class Settings(BaseSettings):
     # 默认收纳方式: move / copy / index
     default_storage_mode: str = "move"
 
-    # 版本保留策略
-    max_versions: int = 0  # 0 = 不限制
-    max_version_age_days: int = 0  # 0 = 不限制
-
     # 回收站自动清理天数
     trash_auto_clean_days: int = 30
+
+    # 同名文件冲突处理策略：rename（自动重命名）/ version（追加为新版本）
+    on_conflict: str = "rename"
+
+    # 文档库默认排序
+    default_sort_by: str = "updated_at"
+    default_sort_order: str = "desc"
+
+    # 启动时自动扫描文件库
+    auto_scan_on_startup: bool = False
+
+    # 每页显示数量（文档库和待整理页面）
+    items_per_page: int = 15
+
+    # 悬浮窗开关（默认开启）
+    enable_floating_window: bool = True
+
+    # 文档库展示模式
+    library_show_flat_view: bool = True   # 平铺展示（全部文档列表）
+    library_show_tree_view: bool = True   # 目录树展示（左侧导航面板）
+
+    # 待整理区文件夹名称（可自定义，默认"待整理"）
+    pending_folder_name: str = "待整理"
+
+    # 云后端服务地址（运行时可配置，生产环境指向阿里云部署）
+    cloud_api_url: str = "http://localhost:9000"
 
     # 日志配置
     log_level: str = "INFO"

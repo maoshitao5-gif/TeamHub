@@ -1,6 +1,12 @@
 /**
- * API 请求封装
- * 统一处理请求和响应
+ * 本地后端 Axios 实例（连接本地 FastAPI，端口 8001-8010）
+ *
+ * 功能：
+ *   - 自动适配 Electron 环境动态端口（通过 window.electron.apiBaseURL）
+ *   - 响应统一解包（返回 response.data）
+ *   - 错误消息自动弹 ElMessage.error（可通过 _silent: true 关闭）
+ *   - 支持 blob 下载（responseType: 'blob' 时返回完整 Response）
+ *   - 重复文件错误（error_type: duplicate_file）不弹全局提示，由页面自行处理
  */
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -9,10 +15,8 @@ import { ElMessage } from 'element-plus'
 // 优先使用 Electron 环境提供的 URL，否则使用默认值
 const getBaseURL = () => {
   if (window.electron?.apiBaseURL) {
-    console.log('[API] Using Electron API URL:', window.electron.apiBaseURL)
     return window.electron.apiBaseURL
   }
-  console.log('[API] Using default API URL: http://127.0.0.1:8001')
   return 'http://127.0.0.1:8001'
 }
 
@@ -27,15 +31,10 @@ const request = axios.create({
   }
 })
 
-// 请求拦截器
+// 请求拦截器（本地后端无认证，直接放行）
 request.interceptors.request.use(
-  (config) => {
-    // 不再需要认证 token
-    return config
-  },
-  (error) => {
-    return Promise.reject(error)
-  }
+  (config) => config,
+  (error) => Promise.reject(error)
 )
 
 // 响应拦截器
@@ -161,7 +160,15 @@ request.interceptors.response.use(
     // 处理有响应但状态码错误的情况
     if (error.response?.data) {
       if (typeof error.response.data === 'object' && error.response.data.detail) {
-        message = error.response.data.detail
+        // detail 可能是字符串或对象
+        if (typeof error.response.data.detail === 'string') {
+          message = error.response.data.detail
+        } else if (typeof error.response.data.detail === 'object') {
+          // 如果是对象，尝试提取消息
+          message = error.response.data.detail.message || error.response.data.detail.detail || JSON.stringify(error.response.data.detail)
+        } else {
+          message = String(error.response.data.detail)
+        }
       } else if (typeof error.response.data === 'string') {
         message = error.response.data
       }
@@ -169,6 +176,11 @@ request.interceptors.response.use(
       message = '文件不存在'
     } else if (error.message) {
       message = error.message
+    }
+    
+    // 确保 message 是字符串
+    if (typeof message !== 'string') {
+      message = String(message)
     }
     
     // 保留原始错误信息，以便组件可以访问 error.response
@@ -179,7 +191,14 @@ request.interceptors.response.use(
                             typeof error.response.data.detail === 'object' &&
                             error.response.data.detail.error_type === 'duplicate_file'
     
-    if (!isDuplicateError) {
+    // 如果错误消息包含换行符，不自动显示，让组件自己处理（使用 MessageBox）
+    // 这样可以显示多行错误消息
+    const isMultiLineError = message.includes('\n')
+    
+    // _silent: true 表示调用方自己处理错误，不弹全局 toast
+    const isSilent = error.config?._silent === true
+
+    if (!isDuplicateError && !isMultiLineError && !isSilent) {
       ElMessage.error(message)
     }
     

@@ -6,14 +6,18 @@
   "author": "TeamHub Team",
   "license": "MIT",
   "scripts": {
-  "electron:dev": "concurrently \"npm run frontend:dev\" \"node start-electron-delay.js\"",
-  "electron:build": "npm run frontend:build && electron-builder",
-  "frontend:dev": "cd frontend && npm run dev",
-  "frontend:build": "cd frontend && npm run build",
-  "backend:build": "pyinstaller teamhub-backend.spec",
-  "build:all": "npm run backend:build && npm run frontend:build && npm run electron:build",
-  "start": "electron ."
-},
+    "dev": "node dev-all.js",
+    "dev:local": "node dev-all.js --no-cloud",
+    "dev:browser": "node dev-all.js --no-electron",
+    "dev:api": "node dev-all.js --no-front",
+    "electron:dev": "concurrently \"npm run frontend:dev\" \"node start-electron-delay.js\"",
+    "electron:build": "npm run frontend:build && electron-builder",
+    "frontend:dev": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build",
+    "backend:build": "pyinstaller teamhub-backend.spec",
+    "build:all": "npm run backend:build && npm run frontend:build && npm run electron:build",
+    "start": "electron ."
+  },
   "devDependencies": {
     "concurrently": "^8.2.2",
     "electron": "^28.3.3",

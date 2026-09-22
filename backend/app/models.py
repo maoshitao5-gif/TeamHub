@@ -5,7 +5,7 @@
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, BigInteger, Integer, Boolean, Table, ForeignKey, Text
+from sqlalchemy import Column, String, DateTime, BigInteger, Integer, Boolean, Table, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
@@ -72,8 +72,44 @@ class Document(Base):
     # 时间戳（全部 UTC）
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
-    trashed_at = Column(DateTime(timezone=True), nullable=True)
+    trashed_at = Column(DateTime(timezone=True), nullable=True, index=True)
     last_scanned_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 同步状态：local（本地未同步）/ synced（已同步）/ conflict（存在冲突）
+    sync_status = Column(String(10), nullable=False, default="local", index=True)
+
+    # 最后成功同步时间（UTC），NULL 表示从未同步
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 是否启用云同步（每文档独立开关）
+    cloud_sync_enabled = Column(Boolean, default=False, nullable=False)
+
+    # 共享可见性："private"（仅自备份，不进 shared/）/"public"（全员可见）
+    share_visibility = Column(String(10), nullable=False, default="public")
+
+    # 云端服务器版本号（冲突检测，对应 CloudDocument.server_version，NULL=从未同步）
+    server_version = Column(Integer, nullable=True)
+
+    # 所属云端工作空间（NULL=未关联）
+    workspace_id = Column(String(36), nullable=True, index=True)
+
+    # 本地文件已被修改（与上次同步版本的哈希不一致），NULL/False=未修改
+    local_modified = Column(Boolean, default=False, nullable=False)
+
+    # 云端文件上次有更新推入本地的时间；非NULL表示用户尚未确认该云端更新
+    cloud_updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 文档来源标记：NULL=本地创建，"cloud_import"=从云仓库导入
+    cloud_source = Column(String(20), nullable=True)
+
+    # 从云仓库导入时对应的云端 doc_id（用于哈希对比关联，NULL=本地创建）
+    cloud_doc_id = Column(String(36), nullable=True, index=True)
+
+    # 最后一次成功推送到云端的时间（NULL=从未推送）
+    cloud_pushed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 最后一次推送时的文件 SHA-256（用于本地比对是否已修改）
+    cloud_hash = Column(String(64), nullable=True)
 
     # 关系
     tags = relationship("Tag", secondary=document_tag, back_populates="documents", lazy="selectin")
@@ -123,8 +159,38 @@ class Version(Base):
     # 时间戳
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
+    # 同步状态
+    sync_status = Column(String(10), nullable=False, default="local")
+
+    # 最后同步时间（UTC）
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+
+    # 上次记录的文件修改时间（os.stat().st_mtime），用于 scan-changes 的 mtime 预检
+    # 与当前 mtime 相同则跳过 SHA-256 计算，大幅降低 I/O
+    last_file_mtime = Column(Float, nullable=True)
+
     # 关系
     document = relationship("Document", back_populates="versions")
+
+
+class ChangeLog(Base):
+    """
+    变更日志表 —— 记录每次 CRUD 操作，为增量云端同步提供基础
+    每条记录对应一次原子操作（create / update / delete / trash / restore 等）
+    """
+    __tablename__ = "change_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    device_id = Column(String(36), nullable=False, index=True)          # 发生变更的设备
+    entity_type = Column(String(20), nullable=False, index=True)        # document / version / tag
+    entity_id = Column(String(36), nullable=False, index=True)          # 对应实体的 UUID
+    operation = Column(String(20), nullable=False)                       # create/update/delete/trash/restore/tag_add/tag_remove
+    payload = Column(Text, nullable=True)                                # JSON 快照（变更后的关键字段）
+    changed_at = Column(DateTime(timezone=True), nullable=False,
+                        default=utc_now, index=True)
+
+    # 推送时间戳：NULL=待推送，非NULL=已推送
+    pushed_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class Tag(Base):
