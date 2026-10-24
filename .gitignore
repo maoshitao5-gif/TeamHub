@@ -25,14 +25,14 @@ wheels/
 dist/teamhub-backend*
 build/teamhub-backend/
 
-# 鏁版嵁搴撴枃浠?
+# 数据库文件
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
 
-# 瀛樺偍鐩綍锛堟枃浠朵笂浼犲悗瀛樺偍鐨勪綅缃級
+# 文件存储目录
 storage/
 !storage/.gitkeep
 
@@ -44,38 +44,40 @@ storage/
 *.swo
 *~
 
-# 鎿嶄綔绯荤粺
+# 操作系统
 .DS_Store
 Thumbs.db
 
-# 鏃ュ織鏂囦欢
+# 日志文件
 *.log
 logs/
 
-# 鐜鍙橀噺锛堥噸瑕侊紒涓嶈鎻愪氦鍒?Git锛?
+# 环境配置与凭据
 .env
 .env.dev
 .env.production
 .env.local
 
-# 娴嬭瘯
+# 测试
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# 涓存椂鏂囦欢
+# 临时文件
 *.tmp
 temp/
 tmp/
 
-# 鍓嶇
+# 前端
 node_modules/
 frontend/dist/
 *.local
 
 # Electron
 dist-electron/
+/启动TeamHub.app/
+/开通云端账号.app/
 out/
 *.exe
 *.dmg
@@ -86,9 +88,20 @@ out/
 # Electron build cache
 electron-builder-cache/
 
-# MinIO 鏈湴鏁版嵁锛堜笉鎻愪氦锛?
+# 历史 MinIO 本地数据（保留但不提交）
 minio-data/
 tools/
 config.json
 # 早期本地配置文件（含存储访问凭据）
 配置文件
+
+# MVP 隔离沙箱（M0 起，隔离个人/共享数据根，不提交）
+.mvp-sandbox/
+
+# MVP 构建中间产物与默认共享对象目录
+/dist/backend/
+/build/pyinstaller/
+/build/hermes-pyinstaller/
+/dist/hermes/
+/dist/teamhub-cloud.zip
+cloud_storage/

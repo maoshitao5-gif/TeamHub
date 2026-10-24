@@ -9,6 +9,10 @@
  *   文档目录列表（用于左侧目录树）/ 获取文档下的目录
  */
 import request from './request'
+import { getIndexRequestHeaders } from './indexing'
+
+export const removeFromFolder = id => request.post(`/api/documents/${id}/remove-from-folder`)
+export const moveToFolder = (id, targetDir) => request.post(`/api/documents/${id}/move-to-folder`, { target_dir: targetDir })
 
 // 收纳文档
 export function createDocument(data) {
@@ -17,12 +21,13 @@ export function createDocument(data) {
 
 // 快速放入待整理
 export function quickAddToPending(data) {
-  return request.post('/api/documents/quick-add', data)
+  // 文件夹需要完成内容校验与首版快照；不能用普通查询的 30 秒超时中断等待。
+  return request.post('/api/documents/quick-add', data, { timeout: 0, _silent: true })
 }
 
 // 搜索文档
 export function searchDocuments(params) {
-  return request.post('/api/documents/search', params)
+  return request.post('/api/documents/search', { ...params, include_content: true }, { headers: getIndexRequestHeaders() })
 }
 
 // 文档名称自动补全（搜索框实时联想）
@@ -102,12 +107,12 @@ export function addVersion(documentId, data) {
 
 // 恢复版本
 export function restoreVersion(documentId, versionId) {
-  return request.post(`/api/documents/${documentId}/versions/${versionId}/restore`)
+  return request.post(`/api/documents/${documentId}/versions/${versionId}/restore`, null, { timeout: 0, _silent: true })
 }
 
 // 删除版本
 export function deleteVersion(documentId, versionId) {
-  return request.delete(`/api/documents/${documentId}/versions/${versionId}`)
+  return request.delete(`/api/documents/${documentId}/versions/${versionId}`, { _silent: true })
 }
 
 // 合并多个文档为版本
@@ -158,3 +163,13 @@ export function checkFolderDuplicates(folderPath) {
 // 获取数据库中有文档的目录列表（用于 LibraryTreePanel 导航）
 export const getDocumentDirs = (parent = '') =>
   request.get('/api/documents/dirs', { params: { parent } })
+
+// 导出个人历史版本（不覆盖目标文件）
+export function exportVersion(documentId, versionId, targetDir) {
+  return request.post(`/api/documents/${documentId}/versions/${versionId}/export`, { target_dir: targetDir })
+}
+
+// 按需检查工作文件，不生成版本
+export function getWorkingState(documentId) {
+  return request.get(`/api/documents/${documentId}/versions/working-state`)
+}

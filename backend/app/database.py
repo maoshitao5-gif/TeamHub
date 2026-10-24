@@ -5,51 +5,116 @@
 数据库存放在文件库的 .teamhub/ 目录下
 """
 import json
+import os
+import tempfile
+import threading
+from contextlib import contextmanager
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 from pathlib import Path
 from backend.app.core.logger import get_logger
 from backend.app.config import settings
 
 logger = get_logger("database")
 
-# 从配置中获取数据库 URL
+# 同一把锁协调会话取得当前引擎与整个切库过程，避免检查/使用竞态。
+_active_sessions = 0
+_active_sessions_lock = threading.RLock()
+
+
+class LibraryBusy(RuntimeError):
+    pass
+
+
+@contextmanager
+def library_change():
+    if not _active_sessions_lock.acquire(blocking=False):
+        raise LibraryBusy("文件库正在切换，请稍后重试")
+    try:
+        if _active_sessions:
+            raise LibraryBusy("有其他操作正在进行，请稍后再切换文件库")
+        yield
+    finally:
+        _active_sessions_lock.release()
+
+
+class TrackedSession(Session):
+    """关闭只减计数一次；已关闭的会话不能复活并绕过切库计数。"""
+    def __init__(self, *args, **kwargs):
+        global _active_sessions
+        with _active_sessions_lock:
+            kwargs["close_resets_only"] = False
+            super().__init__(*args, **kwargs)
+            self._counted = True
+            _active_sessions += 1
+
+    def close(self):
+        global _active_sessions
+        with _active_sessions_lock:
+            super().close()
+            if self._counted:
+                _active_sessions -= 1
+                self._counted = False
+
+
+def active_session_count() -> int:
+    with _active_sessions_lock:
+        return _active_sessions
+
+
+def _create_engine(db_url: str):
+    """按给定 URL 创建引擎,并确保 SQLite 文件父目录存在"""
+    if db_url.startswith("sqlite:///"):
+        db_path = Path(db_url.replace("sqlite:///", ""))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured database directory exists: {db_path.parent}")
+    new_engine = create_engine(
+        db_url,
+        connect_args={
+            "check_same_thread": False,
+            "timeout": 20
+        },
+        pool_pre_ping=True,
+        echo=False
+    )
+
+    # SQLite 连接时启用 WAL 模式和外键约束
+    @event.listens_for(new_engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return new_engine
+
+
+# 从配置中获取数据库 URL(随 library_path 变化,见 rebind_engine)
 SQLALCHEMY_DATABASE_URL = settings.database_url
-
-# 确保数据库目录存在
-db_url = SQLALCHEMY_DATABASE_URL
-if db_url.startswith("sqlite:///"):
-    db_path = Path(db_url.replace("sqlite:///", ""))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Ensured database directory exists: {db_path.parent}")
-
-# 创建数据库引擎
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={
-        "check_same_thread": False,
-        "timeout": 20
-    },
-    pool_pre_ping=True,
-    echo=False
-)
-
-
-# SQLite 连接时启用 WAL 模式和外键约束
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
-
+engine = _create_engine(SQLALCHEMY_DATABASE_URL)
 
 # 创建会话工厂
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def SessionLocal():
+    # 稳定工厂函数：即使调用方缓存 import，也只会取得切换后的当前引擎。
+    with _active_sessions_lock:
+        return TrackedSession(autocommit=False, autoflush=False, bind=engine)
 
 # 创建基础模型类
 Base = declarative_base()
+
+
+def rebind_engine() -> None:
+    """无在途会话时重建引擎；新引擎创建失败不替换旧引擎。"""
+    global engine, SQLALCHEMY_DATABASE_URL
+    with library_change():
+        new_url = settings.database_url
+        new_engine = _create_engine(new_url)
+        old_engine = engine
+        engine = new_engine
+        SQLALCHEMY_DATABASE_URL = new_url
+        old_engine.dispose()
+        logger.info(f"Database engine rebound to: {SQLALCHEMY_DATABASE_URL}")
 
 
 def get_db():
@@ -80,11 +145,10 @@ def init_db():
         (teamhub_dir).mkdir(parents=True, exist_ok=True)
         (teamhub_dir / 'index-versions').mkdir(exist_ok=True)
         (teamhub_dir / 'trash').mkdir(exist_ok=True)
-        (teamhub_dir / 'pointers').mkdir(exist_ok=True)
 
         # 创建待整理目录
-        pending_dir = library / settings.pending_folder_name
-        pending_dir.mkdir(exist_ok=True)
+        pending_dir = Path(settings.pending_path) if settings.pending_path else library / settings.pending_folder_name
+        pending_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Library directory structure initialized: {library}")
 
@@ -96,6 +160,20 @@ def init_db():
 
     # 确保模型已注册到 Base.metadata
     import backend.app.models  # noqa: F401
+    import backend.app.index_models  # noqa: F401
+    import backend.app.partner_models  # noqa: F401
+    import backend.app.preorganize_models  # noqa: F401
+    import backend.app.card_models  # noqa: F401
+    import backend.app.card_job_models  # noqa: F401
+
+    # 旧库预检必须早于 create_all / 同步迁移，失败时不改动旧结构与历史。
+    from backend.app.core.migrations import check_legacy_versions
+    with engine.connect() as conn:
+        tables = {row[0] for row in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ))}
+        if {"documents", "versions"} <= tables:
+            check_legacy_versions(conn)
 
     # 创建所有表
     Base.metadata.create_all(bind=engine)
@@ -103,6 +181,23 @@ def init_db():
 
     # 运行同步层字段迁移（幂等）
     _run_sync_migrations(engine)
+
+    # 运行 MVP 迁移（幂等,契约 §6.1）
+    from backend.app.core.migrations import run_mvp_migrations
+    run_mvp_migrations(engine)
+
+    # 正文索引是可重建的本机派生数据；为已有文件库幂等建立全文检索表。
+    from backend.app.services.indexing import install_schema
+    install_schema(engine)
+    from backend.app.services.search_retrieval import install_schema as install_search_schema
+    install_search_schema(engine)
+
+    # 数据库激活统一恢复伙伴状态：设置切库、启动及迁移都必须走同一入口。
+    # 恢复器不持伙伴任务锁，允许在 library_change 临界区内安全调用。
+    from backend.app.services.partner_runtime import initialize as initialize_partner
+    initialize_partner()
+    from backend.app.services.preorganize import initialize as initialize_preorganize
+    initialize_preorganize()
 
 
 def _run_sync_migrations(engine) -> None:
@@ -206,15 +301,32 @@ def load_library_config() -> dict:
     return {}
 
 
-def save_library_config(config: dict):
+def write_json_config(config_path: Path, config: dict):
+    """同目录暂存再原子替换；写失败保留原配置并向调用方报告。"""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=config_path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(config, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, config_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def save_library_config(config: dict, *, strict: bool = False):
     """
     保存文件库配置到配置文件
     """
     config_path = Path(settings.config_file)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+        write_json_config(config_path, config)
         logger.info(f"Config saved to {config_path}")
     except IOError as e:
         logger.error(f"Failed to save config: {e}")
+        if strict:
+            raise

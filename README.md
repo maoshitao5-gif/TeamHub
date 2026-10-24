@@ -1,220 +1,154 @@
-# 团队文件管理系统
+# TeamHub
 
-一个基于 FastAPI 的团队文件管理系统，支持标签化文件共享，适用于 300 人规模的团队。
+TeamHub 面向电力行业技术资料管理：个人资料默认私有，主动发布到组织内部共享服务；成员通过自由标签逐步缩小范围，找到并取回资料。已保存版本不可改写，个人文件与组织副本独立。
 
-## 功能特性
+首批试用约 10 人。当前采用 Electron + Vue 3、个人 FastAPI/SQLite、共享 FastAPI/SQLite 和服务器受管文件目录。MVP 不依赖 OSS、MinIO 或公网文件备份，不承诺已经验证大规模或多数据库部署。
 
-- ✅ 文件上传与存储
-- ✅ SHA-256 哈希值查重（防止重复上传）
-- ✅ 标签管理系统
-- ✅ 多标签文件关联（多对多关系）
-- ✅ 文件搜索（支持关键词和标签搜索）
+文档入口：[文档导航](docs/README.md) · [架构评估与目录整理](docs/architecture/架构评估与目录整理-2026-09-28.md)。
 
-## 技术栈
+产品依据：[项目基石](docs/product/TeamHub项目基石.md) · [初始 MVP 蓝图](docs/product/TeamHub-MVP实施蓝图.md) · [云端与投递蓝图](docs/product/云端与资料投递实施蓝图.md) · [数据与接口契约](docs/architecture/MVP数据与接口契约.md)。
 
-- **Web 框架**: FastAPI
-- **ORM**: SQLAlchemy
-- **数据库**: SQLite（开发环境，可轻松切换至 PostgreSQL/MySQL）
-- **Python 版本**: 3.7+
+## 当前状态
 
-## 项目结构
+2026-10-22 修复[高细节相机照片读取失败](docs/reviews/相机照片AI读取失败修复-2026-10-22.md)：避免 JPEG 转 PNG 后超过读取上限；在原限制内自适应使用高质量 JPEG，传递真实 MIME，保留压缩说明与原始文件。两张用户指定失败照片的本机读取均已验证通过。
 
-```
-TeamHub/
-├── main.py              # FastAPI 应用主入口，包含所有 API 路由
-├── models.py            # 数据库模型定义（File, Tag, FileTag）
-├── database.py          # 数据库配置和连接管理
-├── requirements.txt     # Python 依赖包列表
-├── storage/             # 文件存储目录（自动创建）
-└── teamhub.db          # SQLite 数据库文件（自动创建）
-```
+2026-10-21 修复[图片预整理提交失败](docs/reviews/图片预整理提交失败修复-2026-10-21.md)：模型读图后以普通文字结束时，在同一任务中保留图像与来源、补交一次有效方案；增加具体字段校验反馈与安全诊断。已用真实 DeepSeek 的合成图像验证补交流程。
 
-## 快速开始
+2026-10-21 扩展[多模态整理与对象 Skill](docs/reviews/多模态整理与对象Skill验收-2026-10-21.md)：文字、Word、表格、PPT、PDF、图片、文件夹、压缩包分别加载独立规则。图片增加 AVIF、JPEG 2000、HEIC/HEIF、安全 SVG 等读取；压缩包支持 ZIP、TAR 与常见压缩变体、7Z、RAR 的成员选读及整体资料卡。沿用原有预整理和一次确认入库流程，原文件与成员结构保持。实际格式和平台边界见本轮验收。
 
-### 方式一：一键启动（推荐）
+2026-10-21 增加文件夹 AI 预整理与资料卡：将文件夹作为一套资料，按需读取已保存版本中的成员，生成整体名称、标签、分类建议和内容导航；用户确认后整体入库，内部结构保持不变。成员相对路径随原文来源保存，未读和无法识别的内容明确展示。见 [文件夹 AI 验收](docs/reviews/文件夹AI整理验收-2026-10-21.md)。
 
-**Windows 系统：**
-双击运行 `start.bat` 文件
+2026-10-21 完成 [AI 资料卡与 Skill](docs/reviews/AI资料卡与Skill验收-2026-10-21.md)：预整理时保存结构化理解，入库后继续用于检索和伙伴阅读；支持独立生成、补全、人工修正及逐份资料的新版本自动更新。卡片与文件版本绑定，实际读取范围由工具记录；文字、表格、视觉、混合内容的阅读方法按需加载。根目录启动入口优先使用本轮应用，操作见 [AI 资料卡指引](docs/guides/AI资料卡使用指引.md)。工程流程与合成案例已验证，真实模型的专业理解和检索收益仍须业务样本检验。以下为此前阶段记录。
 
-**macOS/Linux 系统：**
-```bash
-chmod +x start.sh
-./start.sh
-```
+2026-10-21 完成 [AI 预整理与用户确认](docs/reviews/AI预整理验收-2026-10-21.md)：在待整理中准备名称、标签和分类方案，显示独立四状态，支持批量审阅、一次确认入库及撤销整理。默认关闭后台外发，可授权选中批次或主动开启当前库自动预整理。1034 项后端及引擎、222 项前端及脚本测试、5 组预整理和 13 组原有聊天桌面流程、实际应用冷启动与恢复均通过。根目录启动入口已指向新包；[使用指引](docs/guides/AI预整理使用指引.md)说明操作。真实模型的整理效果仍须业务样本验证。
 
-### 方式二：手动启动
+2026-10-20 完成 [AI 自然交互重构](docs/reviews/AI自然交互重构验收-2026-10-19.md)：直接发送、Hermes 原生多轮历史、内部执行段自动衔接、长回答与部分成果保留、断线及发送结果恢复。当轮 964 项后端及引擎测试、182 项前端、12 项启动与进程管理测试、13 组桌面 AI 流程和实际应用包冷启动通过；[使用指引](docs/guides/AI智能伙伴使用指引.md)说明当前操作。
 
-#### 1. 安装后端依赖
+C0—C7 云端与资料投递已实现，支持独立网页、指定共享、固定版本投递、撤回和更新本地；见[验收记录](docs/reviews/云端与资料投递验收记录.md)。
 
-```bash
-pip install -r requirements.txt
-```
+云仓库新增[在线预览](docs/guides/云仓库在线预览.md)：桌面和网页均可查看当前版及历史版，支持 PDF、图片、DOCX 正文/表格、XLSX 工作表和文本；预览只读，沿用资料权限，不需要取回个人库。
 
-#### 2. 启动后端服务
+[推送与取回查重](docs/guides/推送与取回查重.md)以当前实体内容判断，覆盖云端新增资料、个人库取回和投递附件收录；重复时提示已有入口，已有资料继续通过版本更新维护。
 
-```bash
-python main.py
-```
+[共享资料库入口](docs/guides/共享资料库使用指引.md)无需手动绑定：单库自动进入、多库直接选择并记住有效选择；发布在窗口中选目标，更新原资料保持原位置。
 
-后端将在 `http://localhost:8080` 启动。
+2026-10-15 [AI 辅助整理第一期](docs/guides/AI辅助整理使用指引.md)已接入个人端：配置 DeepSeek API，主动确认单份摘录后生成标签建议和摘要，标签仍经原表单保存。个人后端463项、前端56项、资料库界面38组及冻结桌面流程通过；真实付费调用须自行配置密钥验证，详见[验收与限制](docs/reviews/AI辅助整理第一期验收-2026-10-15.md)。
 
-#### 3. 启动前端服务
+2026-10-16 [资料内容索引](docs/guides/资料内容索引使用指引.md)增加已保存版本的后台解析、正文搜索与逐次确认的 AI 检索线索。当轮工程证据与边界见[历史验收](docs/reviews/资料索引第一步验收-2026-10-15.md)。
 
-打开新的终端窗口：
+2026-10-16 [AI 智能伙伴](docs/guides/AI智能伙伴使用指引.md)首版已完成：持续交流、自主查找与阅读个人资料、PDF 原页和图片讨论、跨资料分析、来源展示及成果确认入库。采用内置 PydanticAI 工具循环；个人后端 634 项、前端 91 项、冻结伙伴 6 组流程及真实桌面包冷启动通过，详见[第一版验收记录](docs/reviews/AI智能伙伴第一版验收-2026-10-16.md)。当轮使用独立测试包；现行入口见下方本机启动，真实模型质量需配置服务后另行验证。
 
-```bash
-cd frontend
-npm install    # 首次运行需要安装依赖
-npm run dev
-```
+同日完成[预算与持续处理优化](docs/reviews/AI伙伴预算与持续处理优化验收-2026-10-16.md)：支持快速／标准／深入／自定义预算、表格行块读取、阶段成果与确认续做、真实请求消耗及未知计量说明。该轮个人后端 682 项、前端 106 项、冻结伙伴 8 组及新包冷启动通过。
 
-前端将在 `http://localhost:5173` 启动。
+随后完成[格式与多模态扩展](docs/reviews/AI伙伴格式与多模态扩展验收-2026-10-16.md)：扩展 PPTX、开放文档和结构化文本，补齐 Word 兼容及办公文档内嵌图片阅读，新增主动图像测试。该轮个人后端 **803** 项、前端 **114** 项、冻结伙伴 **11** 组及独立包冷启动通过。
 
-#### 4. 访问应用
+2026-10-17 完成[AI 伙伴体验第一批优化](docs/reviews/AI伙伴体验优化验收-2026-10-17.md)：独立深入思考／快速回答、真实流式预览、安全 Markdown、可核对引用和跨轮有效文字证据接续。最新个人后端 **869** 项、前端 **163** 项、冻结伙伴 **12** 组及独立包冷启动通过；新测试包及操作见[使用指引](docs/guides/AI智能伙伴使用指引.md)。旧入口保留；真实模型质量另需试用验证。
 
-打开浏览器访问：**http://localhost:5173**
+2026-10-18 完成 [Hermes 本机引擎集成](docs/reviews/Hermes本机引擎集成验收-2026-10-18.md)：独立引擎及运行环境随应用交付，无需用户另装；复用原 AI 服务配置和授权、版本、来源及成果规则。后端 **885** 项、前端 **164** 项、引擎专项 **20** 项、构建/启动器 **11** 项、最终应用资源的 **7** 组桌面 AI 流程与完整包冷启动通过。根目录启动入口优先打开本轮包，[使用指引](docs/guides/AI智能伙伴使用指引.md)提供直接入口及能力边界。
 
-### API 文档
+2026-10-15 已修复闲置后云会话无法连续续期的问题，并更新默认桌面包与本机云服务。632 项后端、38 项前端、38 组资料库界面回归，以及冻结后端真实续期、桌面打包和 Finder 一键启动验证通过。此前已失效的登录须重新登录一次；见[云会话修复验收](docs/reviews/云端会话连续续期修复验收-2026-10-15.md)。
 
-后端启动后，可以访问以下地址查看交互式 API 文档：
+2026-10-14 共享资料库入口优化的设计及验收见[共享资料库验收](docs/reviews/共享资料库体验优化验收-2026-10-14.md)。
 
-- Swagger UI: http://localhost:8080/docs
-- ReDoc: http://localhost:8080/redoc
+本轮[代码审计与优化记录](docs/reviews/代码全面审计与优化记录-2026-10-07.md)包含功能逻辑、批量查询优化、冗余清理及复验；本地242项、云端105项测试通过。此前完整功能覆盖见[系统级测试报告](docs/reviews/MVP系统级测试报告-2026-10-05.md)。
 
-## API 接口说明
+2026-10-13已修复原一键启动并更新默认桌面包；371项后端/Node/启动器测试、11组UI及原生.command/默认包验收通过。原个人库元数据副本也启动成功并保留资料与版本；见[最新系统测试与启动修复](docs/reviews/MVP系统级测试与启动修复报告-2026-10-13.md)。
 
-### 1. POST /upload - 上传文件
+M0—M5 已分别复核修复；M6 的备份恢复、多人集成与 macOS ARM64 打包产物验证见 [M6 修复记录](docs/reviews/M6复核与修复记录.md)。本机工程验证不等于已完成内网部署或真人价值验证，后两者属于 M7。
 
-上传文件并关联标签。
+本轮环境：macOS ARM64，Python 3.11.15，Node 26.8.1，Electron 44.4.5。Windows、Linux、Intel Mac、签名安装包尚未实测。两个 Python 环境保留独立依赖，不混用解释器。
 
-**请求参数：**
-- `file`: 文件对象（multipart/form-data）
-- `tags`: 标签列表（字符串数组）
+## 本机启动
 
-**示例：**
-```bash
-curl -X POST "http://localhost:8080/upload" \
-  -F "file=@example.pdf" \
-  -F "tags=项目文档" \
-  -F "tags=重要"
+第一次试用请先阅读 [MVP 本机试用启动指引](docs/guides/MVP本机试用启动指引.md)，含账号准备、逐步启动和 A/B/C 体验路线。
+
+双击根目录 [启动TeamHub.app](启动TeamHub.app)，即可独立启动 Electron 桌面版及个人后端，不需要 Terminal。原 `.command` 保留为终端兼容入口。需要本机云端时另运行 `bash scripts/mvp-dev.sh cloud`，旧库先按[迁移指引](docs/guides/云端与投递启动及迁移指引.md)升级。桌面沿用原有个人库，切换新版前先按 ⌘Q 退出旧应用。入口优先使用 `dist-electron/photo-render-fix-2026-10-22/mac-arm64/TeamHub.app`，缺失时依次回退 `image-preorganize-fix-2026-10-21`、`multimodal-organize-2026-10-21`、`folder-ai-2026-10-21`、`document-cards-2026-10-21`、`preorganize-format-fix-2026-10-21`、`security-audit-2026-10-21`、`ai-preorganize-2026-10-20`、`ai-natural-chat-2026-10-19`、`hermes-connection-fix-2026-10-18` 下的同名包，最后使用 `dist-electron/mac-arm64/TeamHub.app`。独立运行的共享服务由 [停止本地测试.command](停止本地测试.command) 停止。
+
+入口现在清理Electron的Node模式污染，并等待窗口、后端进程及实例健康后才提示“已就绪”。启动日志为 `.mvp-sandbox/logs-desktop.log`；超时或失败会明确报错。当前默认本机云库已备份恢复到005，试用账号需自行开通。
+
+无终端入口由 `scripts/desktop-launcher.applescript` 生成，重建命令为 `npm run launcher:build`。它根据自身所在目录寻找项目，使用现有就绪检查；错误弹框15秒后自动关闭，日志仍保留。生成的 `.app` 不纳入源码提交。
+
+本机维护者双击 [开通云端账号.app](开通云端账号.app)，首次选择“系统管理员（首次使用）”，输入登录邮箱、名称和两遍密码并确认；之后可开通“普通成员”。密码仅在本机隐藏输入，不必发送到聊天。该入口固定管理 `.mvp-sandbox/shared-server/cloud.db` 中的 **MVP团队 / 组织资料**，不管理独立19000试用库，不覆盖已有账号，也不会发送邮件。共享数据库须已初始化到005；缺失或旧结构会明确拒绝，不自动迁移。重建入口：`npm run accounts:build`。
+
+普通成员登录 [云端资料库](http://127.0.0.1:9000/cloud.html)，不需要个人后端；系统管理员登录 [管理后台](http://127.0.0.1:9000/admin.html)。网页公开注册仍停用；账号开通仅由共享服务所在电脑的维护者操作。
+
+需要个人与云端联调浏览器界面时，在仓库根目录执行：
+
+```sh
+npm run dev:browser
 ```
 
-**响应：**
-```json
-{
-  "id": 1,
-  "original_filename": "example.pdf",
-  "file_size": 102400,
-  "sha256_hash": "abc123...",
-  "upload_time": "2024-01-01T12:00:00",
-  "tags": ["项目文档", "重要"]
-}
+浏览器命令启动个人后端（默认 `127.0.0.1:8001`，冲突时自动选择 8001—8010 中的空闲端口）、共享后端 `127.0.0.1:9000` 和前端 `http://127.0.0.1:5173`，服务在后台运行。沙箱数据在 `.mvp-sandbox/`。全新启动默认个人库为 A；重复启动复用当前库；切换 B/C 的命令见启动指引。
+
+```sh
+npm run dev:status
+npm run dev:stop
 ```
 
-**错误响应：**
-- `400`: 文件已存在（相同 SHA-256 哈希值）
+启动器遇到未知进程占用端口会换用可用个人 API 端口或明确提示，不清理占用者；停止只处理启动器确认归属的服务。由一键入口启动的 Vite 也会一起停止；独立手动启动的 Vite 仍在其终端按 Ctrl+C。`npm run dev` 不再调用旧的 `dev-all.js` 端口清理流程。
 
-### 2. GET /tags - 获取所有标签
+首次安装依赖的本机复现方式：
 
-获取系统中所有已存在的标签列表。
-
-**示例：**
-```bash
-curl "http://localhost:8080/tags"
+```sh
+python3.11 -m venv venv
+venv/bin/python -m pip install -r requirements-mvp-macos.lock
+python3.11 -m venv cloud_backend/venv
+cloud_backend/venv/bin/python -m pip install -r cloud_backend/requirements-mvp-macos.lock
+npm ci
+npm ci --prefix frontend
 ```
 
-**响应：**
-```json
-{
-  "tags": [
-    {"id": 1, "name": "项目文档"},
-    {"id": 2, "name": "重要"}
-  ],
-  "total": 2
-}
+锁文件记录本轮已通过测试环境的精确版本，不表示已在全新机器完成离线安装验证；其他操作系统另建环境验证。`requirements.txt` 统一引用对应锁文件，不再维护另一套旧版本。
+
+个人服务的生产路径采用随包交付的 Hermes，旧 PydanticAI 适配器仅保留在 `backend/tests/support/` 作历史行为回归。运行完整后端测试前另安装 `venv/bin/python -m pip install -r requirements-legacy-tests.lock`；桌面构建不需要这组测试专用依赖。执行 `npm start` 或 `npm run electron:dev` 会启动并验证自己的 Vite 服务，再打开开发版桌面。
+
+公开注册和加入审批在 MVP 停用。如何开通管理员及普通成员、设置共享服务地址，见 [MVP 运维与交接](docs/guides/MVP运维与交接.md)。
+
+## 桌面打包
+
+```sh
+python3 scripts/prepare-hermes.py
+npm run electron:build -- --mac --dir
 ```
 
-### 3. POST /search - 搜索文件
+开发打包准备需要 `uv`；准备脚本校验锁定上游归档并创建独立 Hermes 构建环境。后续构建使用仓库 `venv` 重建个人后端、独立环境重建 Hermes，再构建前端和桌面。用户安装包已包含运行环境。本机已准备源码、依赖和 Electron 分发时可离线复用：
 
-根据关键词或标签搜索文件。
-
-**请求体（JSON）：**
-```json
-{
-  "keywords": ["项目"],
-  "tags": ["重要"]
-}
+```sh
+npm run backend:build
+npm run hermes:build
+npm run frontend:build
+node_modules/.bin/electron-builder --mac --dir --config.electronDist=node_modules/electron/dist
 ```
 
-**示例：**
-```bash
-curl -X POST "http://localhost:8080/search" \
-  -H "Content-Type: application/json" \
-  -d '{"keywords": ["项目"], "tags": ["重要"]}'
+默认构建产物：`dist-electron/mac-arm64/TeamHub.app`。本轮独立交付位于 `dist-electron/photo-render-fix-2026-10-22/mac-arm64/TeamHub.app`，已完成本机 ad hoc 签名及验证，尚未进行开发者分发签名或公证。桌面自身启动个人后端，选择 8001—8010 中空闲端口，退出应用时回收自有后端及 Hermes；共享后端单独运行。
+
+## 数据与恢复
+
+- 个人库：工作文件及 `.teamhub/db.sqlite`、`objects/`、`trash/`、配置。AI 资料卡和人工补充保存在同一数据库中，随库备份；不会改写文件快照或自动上传组织云端。
+- 共享库：独立 `DATABASE_URL` 与 `STORAGE_DIR/objects/`，两者必须一起备份。
+- 备份前停止相应服务和文件编辑；恢复到全新目录，绝不覆盖正在使用的库。
+- 个人备份配置只保留非凭据白名单；共享备份保留账号密码散列以维持账号，但清除刷新会话，不备份 JWT 签名密钥。
+
+完整命令、限制和升级回退步骤见 [MVP 运维与交接](docs/guides/MVP运维与交接.md)。
+
+## 工程结构与验证
+
+本轮安全修复、瘦身及完整测试结果见[全项目审计与瘦身验收](docs/reviews/全项目审计与瘦身验收-2026-10-21.md)。测试证据和前一桌面交付保留，真实资料、备份、历史版本与迁移文件不作瘦身删除。
+
+```text
+backend/app/          个人服务、受管版本、收藏、共享适配层
+cloud_backend/app/    认证、组织资料、标签协作、权限与对象存储
+frontend/src/         Vue 用户界面及管理界面
+electron/             桌面主进程、预加载桥、后端生命周期
+scripts/              隔离启动、备份、构建与界面验收工具
+docs/                 基石、蓝图、契约及各阶段复核记录
 ```
 
-**响应：**
-```json
-{
-  "files": [
-    {
-      "id": 1,
-      "original_filename": "example.pdf",
-      "file_size": 102400,
-      "sha256_hash": "abc123...",
-      "upload_time": "2024-01-01T12:00:00",
-      "tags": ["项目文档", "重要"]
-    }
-  ],
-  "total": 1
-}
+```sh
+venv/bin/python -m pytest backend/tests -q
+cloud_backend/venv/bin/python -m pytest cloud_backend/tests -q
+node --test scripts/test_m6_backend_manager.cjs
+node scripts/test_m6_packaged.cjs
 ```
 
-## 数据模型
-
-### File 表
-- `id`: 文件ID（主键）
-- `original_filename`: 原始文件名
-- `storage_path`: 存储路径
-- `sha256_hash`: SHA-256 哈希值（唯一，用于查重）
-- `file_size`: 文件大小（字节）
-- `upload_time`: 上传时间
-
-### Tag 表
-- `id`: 标签ID（主键）
-- `name`: 标签名称（唯一）
-
-### FileTag 中间表
-- `file_id`: 文件ID（外键）
-- `tag_id`: 标签ID（外键）
-
-## 开发说明
-
-### 数据库迁移
-
-当前使用 SQLite，如需切换到其他数据库（如 PostgreSQL），只需修改 `database.py` 中的 `SQLALCHEMY_DATABASE_URL`：
-
-```python
-# PostgreSQL 示例
-SQLALCHEMY_DATABASE_URL = "postgresql://user:password@localhost/dbname"
-```
-
-### 文件存储
-
-- 文件存储在 `storage/` 目录下
-- 文件名格式：`{hash前8位}_{原始文件名}`，避免文件名冲突
-- 使用 SHA-256 哈希值进行文件查重
-
-### 扩展建议
-
-- 添加用户认证和权限管理
-- 添加文件下载接口
-- 添加文件删除接口
-- 添加文件版本管理
-- 添加文件预览功能
-- 添加文件访问日志
-- 添加文件大小限制和类型限制
-
-## 许可证
-
-MIT License
+测试启动临时服务，需要本机端口权限；实际打包验收要求先生成 macOS ARM64 产物。测试不应使用真实个人库或共享库。

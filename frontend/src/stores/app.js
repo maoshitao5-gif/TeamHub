@@ -5,7 +5,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import request from '@/api/request'
-import { setCloudApiUrl } from '@/api/cloud'
 import { getSyncStatus } from '@/api/sync'
 
 export const useAppStore = defineStore('app', () => {
@@ -37,7 +36,7 @@ export const useAppStore = defineStore('app', () => {
   // 同步状态缓存（GET /api/sync/status 响应）
   const syncStatus = ref(null)
 
-  // 当前绑定工作空间 ID
+  // 当前共享资料库 ID
   const activeWorkspaceId = computed(() => syncStatus.value?.workspace_id || null)
 
   // 是否需要显示初始化向导
@@ -73,7 +72,6 @@ export const useAppStore = defineStore('app', () => {
       settings.value = data
       libraryPath.value = data.library_path
       libraryInitialized.value = !!data.library_path
-      if (data.cloud_api_url) setCloudApiUrl(data.cloud_api_url)
     } catch (e) {
       console.error('Failed to fetch settings:', e)
     }
@@ -95,8 +93,11 @@ export const useAppStore = defineStore('app', () => {
 
   // 获取同步状态
   async function fetchSyncStatus() {
+    const originalLibrary = libraryPath.value, originalServer = settings.value.cloud_api_url, originalStatus = syncStatus.value
     try {
-      syncStatus.value = await getSyncStatus()
+      const status = await getSyncStatus()
+      // Account restoration or a newer library selection owns any replacement cache.
+      if (libraryPath.value === originalLibrary && settings.value.cloud_api_url === originalServer && syncStatus.value === originalStatus) syncStatus.value = status
     } catch (e) {
       // 静默失败
     }

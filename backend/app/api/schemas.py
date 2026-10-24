@@ -16,7 +16,7 @@ class DocumentCreate(BaseModel):
     is_folder: bool = False
     source_path: str = Field(..., description="文件/文件夹的原始路径")
     target_dir: Optional[str] = Field(None, description="文件库中的目标子目录（相对路径）")
-    storage_mode: str = Field("move", pattern="^(move|copy|index)$")
+    storage_mode: str = Field("copy", pattern="^(move|copy|index)$")  # M2 起默认复制收录(契约 §5.1)
     tags: List[str] = Field(..., min_items=1, description="标签名列表（至少一个）")
     cloud_source: Optional[str] = Field(None, description="来源标记，如 'cloud_import'")
     cloud_doc_id: Optional[str] = Field(None, description="从云仓库导入时对应的云端文档ID")
@@ -30,7 +30,7 @@ class DocumentUpdate(BaseModel):
 
 class DocumentOrganize(BaseModel):
     """整理待整理文档（从待整理区移入文件库）"""
-    target_dir: str = Field(..., description="文件库中的目标子目录")
+    target_dir: Optional[str] = Field(None, description="可选工作目录；省略或空字符串时放入个人库根目录")
     tags: List[str] = Field(..., min_items=1, description="标签名列表（至少一个）")
     name: Optional[str] = None
 
@@ -41,11 +41,15 @@ class DocumentQuickAdd(BaseModel):
     is_folder: bool = False
 
 
+class DocumentFolderMove(BaseModel):
+    target_dir: str = Field(..., min_length=1, max_length=2048)
+
+
 class BatchOrganize(BaseModel):
     """批量整理"""
     document_ids: List[str]
-    target_dir: str
-    tags: List[str] = Field(..., min_items=1, description="标签名列表（至少一个）")
+    target_dir: Optional[str] = Field(None, description="可选工作目录；省略或空字符串时放入个人库根目录")
+    tags: List[str] = Field(..., min_items=1, description="追加的共同标签（至少一个），保留各资料已有标签")
 
 
 class BatchTagUpdate(BaseModel):
@@ -76,12 +80,14 @@ class MergeAsVersions(BaseModel):
 
 class SearchRequest(BaseModel):
     """搜索请求"""
-    keyword: Optional[str] = None
+    keyword: Optional[str] = Field(None, max_length=512)
+    include_content: bool = False
     tags: List[str] = Field(default_factory=list)
     is_folder: Optional[bool] = None
     status: Optional[str] = None
+    favorites_only: bool = False
     folder: Optional[str] = None  # 按目录前缀过滤（None=不过滤，"."=根目录文档，其他=子目录路径）
-    sort_by: str = Field("updated_at", pattern="^(name|updated_at|total_size|created_at)$")
+    sort_by: str = Field("updated_at", pattern="^(relevance|name|updated_at|total_size|created_at)$")
     sort_order: str = Field("desc", pattern="^(asc|desc)$")
     page: int = Field(1, ge=1)
     page_size: int = Field(20, ge=1, le=100)
@@ -105,6 +111,31 @@ class TagMerge(BaseModel):
     """合并标签"""
     source_tag_ids: List[str] = Field(..., min_length=1)
     target_tag_id: str
+
+
+# ========== 收藏相关 ==========
+
+class FavoriteCreate(BaseModel):
+    """收藏资料(M3):local=本地资料引用;shared=共享资料纯引用(联调 M4-M5)"""
+    target_type: str = Field(..., pattern="^(local|shared)$")
+    local_document_id: Optional[str] = None
+    server_url: Optional[str] = None
+    workspace_id: Optional[str] = None
+    shared_document_id: Optional[str] = None
+
+
+class FavoriteResponse(BaseModel):
+    id: str
+    target_type: str
+    local_document_id: Optional[str] = None
+    server_url: Optional[str] = None
+    workspace_id: Optional[str] = None
+    shared_document_id: Optional[str] = None
+    created_at: datetime
+    document: Optional["DocumentResponse"] = None  # local 目标时的资料引用
+
+    class Config:
+        from_attributes = True
 
 
 # ========== 设置相关 ==========
@@ -156,6 +187,8 @@ class TagResponse(BaseModel):
     name: str
     color: Optional[str] = None
     document_count: int = 0
+    usage_count: int = 0
+    usage_by_status: dict[str, int] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True
@@ -168,7 +201,8 @@ class TagListResponse(BaseModel):
 
 
 class VersionCreate(BaseModel):
-    file_path: str
+    """创建版本请求(M2):默认从文档工作位置取快照,file_path 仅作兼容保留"""
+    file_path: Optional[str] = None
     relative_path: Optional[str] = None
     note: Optional[str] = None
 
@@ -179,6 +213,7 @@ class VersionResponse(BaseModel):
     file_path: str
     relative_path: Optional[str] = None
     sha256_hash: Optional[str] = None
+    manifest_hash: Optional[str] = None
     file_size: int
     original_filename: str
     note: Optional[str] = None
@@ -189,12 +224,31 @@ class VersionResponse(BaseModel):
         from_attributes = True
 
 
+class SearchPassage(BaseModel):
+    unit_id: Optional[str] = None
+    ordinal: Optional[int] = None
+    source_kind: str
+    label: str = ''
+    location: Optional[dict] = None
+    excerpt: str = ''
+
+
+class SearchMatch(BaseModel):
+    mode: str = 'lexical'
+    relevance: dict = Field(default_factory=dict)
+    channels: List[str]
+    passages: List[SearchPassage] = Field(default_factory=list)
+    coverage: dict = Field(default_factory=dict)
+
+
 class DocumentResponse(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
     is_folder: bool
     storage_path: Optional[str] = None
+    storage_area: str = "library"
+    working_path: Optional[str] = None
     storage_mode: str
     original_path: Optional[str] = None
     status: str
@@ -219,6 +273,7 @@ class DocumentResponse(BaseModel):
     cloud_hash: Optional[str] = None
     # 云端工作空间
     workspace_id: Optional[str] = None
+    search_match: Optional[SearchMatch] = None
 
     class Config:
         from_attributes = True
@@ -244,6 +299,7 @@ class LibraryInfoResponse(BaseModel):
     trash_count: int = 0
     trash_size: int = 0
     pending_folder_name: str = "待整理"
+    pending_path: Optional[str] = None
 
 
 # ========== 智能分析相关 ==========

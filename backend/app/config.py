@@ -4,9 +4,28 @@
 支持 Electron 桌面应用环境
 """
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+
+# 沙箱模式(由 scripts/mvp-dev.sh 通过 env -i 设置 TEAMHUB_SANDBOX=1):
+# 禁用 .env 文件读取,配合脚本的干净环境,防止上级目录 .env 或继承环境变量
+# 把 library_path / database_url 等带出沙箱(M0-R01)。
+SANDBOX = os.getenv("TEAMHUB_SANDBOX", "").lower() in ("1", "true", "yes")
+
+
+def _desktop_development_origin() -> str | None:
+    """仅接受 Electron 已验证启动器提供的单一本机开发入口。"""
+    value = os.getenv("TEAMHUB_DEV_FRONTEND_URL", "")
+    match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/?", value)
+    if match is None:
+        return None
+    port = int(match.group(1))
+    if port > 65535 or port == 80:
+        return None
+    return f"http://127.0.0.1:{port}"
 
 
 class Settings(BaseSettings):
@@ -40,12 +59,22 @@ class Settings(BaseSettings):
         """获取允许的 CORS 源列表"""
         origins = self._base_allowed_origins.copy()
         if self.is_electron:
+            origins.append("null")  # 打包 file:// 页面的 Origin；浏览器开发模式不开放。
+            if development_origin := _desktop_development_origin():
+                if development_origin not in origins:
+                    origins.append(development_origin)
             for port in range(8001, 8011):
                 origins.extend([
                     f"http://127.0.0.1:{port}",
                     f"http://localhost:{port}",
                 ])
         return origins
+
+    # 文件夹快照与解包保护上限；环境变量可调整，试用样本校准留 M7。
+    shared_download_max_bytes: int = Field(3 * 1024**3, ge=1)
+    snapshot_max_entries: int = Field(10000, ge=1)
+    snapshot_max_file_bytes: int = Field(1024 * 1024 * 1024, ge=1)
+    snapshot_max_total_bytes: int = Field(2 * 1024 * 1024 * 1024, ge=1)
 
     # 文件大小限制（单文件）
     max_file_size: int = 1024 * 1024 * 1024  # 1GB
@@ -78,6 +107,7 @@ class Settings(BaseSettings):
 
     # 待整理区文件夹名称（可自定义，默认"待整理"）
     pending_folder_name: str = "待整理"
+    pending_path: Optional[str] = None
 
     # 云后端服务地址（运行时可配置，生产环境指向阿里云部署）
     cloud_api_url: str = "http://localhost:9000"
@@ -114,7 +144,7 @@ class Settings(BaseSettings):
         return "config.json"
 
     model_config = SettingsConfigDict(
-        env_file=[".env", "../.env", "../../.env"],
+        env_file=None if SANDBOX else [".env", "../.env", "../../.env"],
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"

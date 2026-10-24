@@ -31,6 +31,12 @@ def get_document_or_404(db: Session, doc_id: str):
     return doc
 
 
+def find_trash_entries(trash_dir: Path, doc_id: str, storage_path) -> list[Path]:
+    """仅按资料 ID 定位；旧时间戳文件名无法证明归属，留待副本迁移核实。"""
+    by_id = trash_dir / doc_id
+    return [by_id] if by_id.exists() else []
+
+
 def calculate_sha256(file_path: str) -> str:
     """
     计算文件的 SHA-256 哈希值

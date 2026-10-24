@@ -1,218 +1,180 @@
 """
-版本 API 路由
-包含版本的创建、查看、恢复、删除等操作
-"""
-import os
-import shutil
-from pathlib import Path
+版本 API 路由(M2 不可变快照语义)
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+按 docs/MVP数据与接口契约.md §5.1:
+- GET 版本列表(版本号倒序);
+- POST 从工作位置创建快照新版本;内容与当前版一致 → 200 CONTENT_UNCHANGED;
+- POST /{vid}/restore 恢复 = 替换工作文件并切换当前版本,保留历史;
+- POST /{vid}/export 导出指定版本内容到目标目录,不覆写已有文件;
+- DELETE 删除非当前版本记录；对象文件保留，等待引用安全的 GC。
+"""
+import hashlib
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import exists, func
 
 from backend.app.database import get_db
-from backend.app.models import Version
-from backend.app.config import settings
-from backend.app.core.file_utils import calculate_sha256, get_document_or_404
+from backend.app.models import Version, Document
+from backend.app.core.file_utils import get_document_or_404
 from backend.app.core.logger import get_logger
-from backend.app.core.changelog import record_change
 from backend.app.api.schemas import VersionCreate, VersionResponse
+from backend.app.services import versions as version_service
+from backend.app.services.versions import VersionServiceError
 
 logger = get_logger("api.versions")
 router = APIRouter(prefix="/api/documents/{document_id}/versions", tags=["versions"])
 
 
-def _compute_hash_background(version_id: str, file_path: str):
-    """后台计算文件哈希"""
-    from backend.app.database import SessionLocal
-    try:
-        if os.path.isfile(file_path):
-            sha256 = calculate_sha256(file_path)
-            db = SessionLocal()
-            try:
-                version = db.query(Version).filter(Version.id == version_id).first()
-                if version:
-                    version.sha256_hash = sha256
-                    db.commit()
-            finally:
-                db.close()
-    except Exception as e:
-        logger.error(f"Background hash calculation failed: {e}")
+
+class VersionExportRequest(BaseModel):
+    """导出指定版本请求"""
+    target_dir: str = Field(..., min_length=1, description="导出目标目录(绝对路径)")
+
+
+def _version_response(version, current_id):
+    response = VersionResponse.model_validate(version)
+    response.is_current = version.id == current_id
+    return response
 
 
 @router.get("", response_model=list[VersionResponse])
 def list_versions(document_id: str, db: Session = Depends(get_db)):
-    """获取文档的所有版本"""
-    get_document_or_404(db, document_id)
+    """获取文档的所有版本(按版本号倒序)"""
+    doc = get_document_or_404(db, document_id)
 
     versions = db.query(Version).filter(
         Version.document_id == document_id
     ).order_by(Version.version_number.desc()).all()
 
-    return versions
+    return [_version_response(version, doc.current_version_id) for version in versions]
 
 
-@router.post("", response_model=VersionResponse)
-def add_version(
-    document_id: str,
-    req: VersionCreate,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """为文档添加新版本"""
+@router.get("/working-state")
+def working_state(document_id: str, db: Session = Depends(get_db)):
+    """按需检查工作内容，不创建对象或修改已保存版本。"""
+    from backend.app.services import snapshots
     doc = get_document_or_404(db, document_id)
-
-    source = Path(req.file_path)
-    if not source.exists():
-        raise HTTPException(400, f"文件不存在: {req.file_path}")
-
-    # 获取当前最大版本号
-    max_version = db.query(Version).filter(
-        Version.document_id == document_id
-    )
-    if req.relative_path:
-        max_version = max_version.filter(Version.relative_path == req.relative_path)
-    else:
-        max_version = max_version.filter(Version.relative_path.is_(None))
-
-    max_version = max_version.order_by(Version.version_number.desc()).first()
-    new_version_number = (max_version.version_number + 1) if max_version else 1
-
-    # 将旧的当前版本标记为非当前
-    if max_version and max_version.is_current:
-        max_version.is_current = False
-
-    # 处理文件：对于单文件文档，将旧版本移入 .versions/ 目录
-    if not doc.is_folder and not req.relative_path:
-        if doc.storage_path and settings.library_path:
-            library = Path(settings.library_path)
-            current_file = library / doc.storage_path
-
-            if current_file.exists() and max_version:
-                # 移动旧版本到 .versions/
-                versions_dir = current_file.parent / '.versions'
-                versions_dir.mkdir(exist_ok=True)
-                old_name = f"{current_file.stem}_v{max_version.version_number}{current_file.suffix}"
-                old_path = versions_dir / old_name
-                shutil.copy2(str(current_file), str(old_path))
-                max_version.file_path = str(old_path)
-
-            # 新版本替换当前文件
-            if source != current_file:
-                shutil.copy2(str(source), str(current_file))
-            new_file_path = str(current_file)
+    if doc.status == "trashed":
+        return {"state": "unavailable", "message": "资料在回收站中"}
+    try:
+        source = version_service.working_path(doc)
+        if source.is_symlink():
+            raise snapshots.SnapshotError("不支持符号链接工作文件")
+        if not source.exists():
+            return {"state": "missing", "message": "工作文件已缺失，历史版本仍可导出"}
+        if doc.is_folder:
+            manifest, _ = snapshots._build_folder_manifest(source)
+            digest = hashlib.sha256(manifest).hexdigest()
         else:
-            new_file_path = str(source)
-    else:
-        new_file_path = str(source)
-
-    file_size = os.path.getsize(new_file_path) if os.path.isfile(new_file_path) else 0
-
-    version = Version(
-        document_id=document_id,
-        version_number=new_version_number,
-        file_path=new_file_path,
-        relative_path=req.relative_path,
-        file_size=file_size,
-        original_filename=source.name,
-        note=req.note,
-        is_current=True
-    )
-    db.add(version)
-    record_change(db, "version", version.id, "create", {
-        "document_id": document_id, "version_number": new_version_number
-    })
-    db.commit()
-    db.refresh(version)
-
-    # 后台计算哈希
-    background_tasks.add_task(_compute_hash_background, version.id, new_file_path)
-
-    # 版本数限制：若超出 max_versions，删除最旧的非当前版本
-    if settings.max_versions > 0:
-        all_versions = db.query(Version).filter(
-            Version.document_id == document_id
-        ).order_by(Version.version_number.desc()).all()
-        if len(all_versions) > settings.max_versions:
-            to_delete = [v for v in all_versions[settings.max_versions:] if not v.is_current]
-            for v in to_delete:
-                try:
-                    file_path = Path(v.file_path)
-                    if file_path.exists() and '.versions' in str(file_path):
-                        file_path.unlink()
-                except OSError as e:
-                    logger.warning(f"删除超额版本文件失败: {e}")
-                db.delete(v)
-                logger.info(f"超出版本数限制，删除版本 v{v.version_number}（文档 {document_id}）")
-            db.commit()
-
-    return version
+            # 检查前后身份，避免把读取中变化的内容宣告为已保存。
+            before = source.stat()
+            digest = snapshots._hash_file(source)
+            if snapshots._file_identity(before) != snapshots._file_identity(source.stat()):
+                raise snapshots.SnapshotError("检查期间文件发生变化，请重试")
+        current = db.get(Version, doc.current_version_id) if doc.current_version_id else None
+        changed = current is None or current.sha256_hash != digest
+        return {"state": "changed" if changed else "unchanged",
+                "message": "有尚未保存的修改" if changed else "与当前已保存版本一致"}
+    except (snapshots.SnapshotError, VersionServiceError, OSError) as exc:
+        return {"state": "unavailable", "message": str(exc)}
 
 
-@router.post("/{version_id}/restore")
-def restore_version(document_id: str, version_id: str, db: Session = Depends(get_db)):
-    """恢复某个版本为当前版本"""
+@router.post("")
+def add_version(document_id: str, req: VersionCreate, db: Session = Depends(get_db)):
+    """从工作位置创建快照新版本(契约 §5.1)"""
     doc = get_document_or_404(db, document_id)
+    if doc.status == "trashed":
+        raise HTTPException(400, "文档在回收站中,请先恢复")
 
-    target_version = db.query(Version).filter(
-        Version.id == version_id,
-        Version.document_id == document_id
-    ).first()
-    if not target_version:
+    try:
+        version, created = version_service.snapshot_working_copy(
+            db, doc, note=req.note, source_path=req.file_path or None
+        )
+    except VersionServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
+
+    db.commit()
+
+    if not created:
+        # 契约 CONTENT_UNCHANGED:返回当前版本,不产生新版本
+        return JSONResponse({
+            "error": {
+                "code": "CONTENT_UNCHANGED",
+                "message": "内容与当前版本一致,未产生新版本",
+                "details": None,
+            },
+            "version": _version_response(version, doc.current_version_id).model_dump(mode="json"),
+        })
+
+    logger.info(f"文档 {doc.id} 新版本 v{version.version_number} 已创建")
+    return _version_response(version, doc.current_version_id)
+
+
+@router.post("/{version_id}/restore", response_model=VersionResponse)
+def restore_version(document_id: str, version_id: str, db: Session = Depends(get_db)):
+    """恢复历史版本到工作位置，未保存修改自动保护"""
+    doc = get_document_or_404(db, document_id)
+    if doc.status == "trashed":
+        raise HTTPException(400, "文档在回收站中，请先恢复")
+    target = db.get(Version, version_id)
+    if not target or target.document_id != doc.id:
         raise HTTPException(404, "版本不存在")
 
-    if target_version.is_current:
-        return {"message": "该版本已经是当前版本"}
+    try:
+        version = version_service.restore_working_version(db, doc, target)
+    except VersionServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
 
-    # 获取同一相对路径下的所有版本
-    query = db.query(Version).filter(Version.document_id == document_id)
-    if target_version.relative_path:
-        query = query.filter(Version.relative_path == target_version.relative_path)
-    else:
-        query = query.filter(Version.relative_path.is_(None))
+    logger.info(f"文档 {doc.id} 已恢复到 v{version.version_number}")
+    return _version_response(version, doc.current_version_id)
 
-    # 将所有版本标记为非当前
-    for v in query.all():
-        v.is_current = False
 
-    # 恢复目标版本
-    target_version.is_current = True
+@router.post("/{version_id}/export")
+def export_version(document_id: str, version_id: str, req: VersionExportRequest,
+                   db: Session = Depends(get_db)):
+    """导出指定版本内容到目标目录,不覆写已有文件"""
+    doc = get_document_or_404(db, document_id)
+    target = db.get(Version, version_id)
+    if not target or target.document_id != doc.id:
+        raise HTTPException(404, "版本不存在")
 
-    # 对于单文件文档，将恢复版本的文件复制回当前位置
-    if not doc.is_folder and not target_version.relative_path:
-        if doc.storage_path and settings.library_path:
-            library = Path(settings.library_path)
-            current_path = library / doc.storage_path
-            old_path = Path(target_version.file_path)
-            if old_path.exists() and old_path != current_path:
-                shutil.copy2(str(old_path), str(current_path))
-                target_version.file_path = str(current_path)
+    try:
+        exported = version_service.export_version(doc, target, req.target_dir)
+    except VersionServiceError as e:
+        raise HTTPException(e.status_code, str(e)) from e
 
-    record_change(db, "version", target_version.id, "update", {
-        "document_id": document_id, "restored_to_version": target_version.version_number
-    })
-    db.commit()
-    return {"message": f"已恢复到版本 v{target_version.version_number}"}
+    return {"message": "已导出", "path": str(exported)}
 
 
 @router.delete("/{version_id}")
 def delete_version(document_id: str, version_id: str, db: Session = Depends(get_db)):
-    """删除某个版本"""
-    version = db.query(Version).filter(
-        Version.id == version_id,
-        Version.document_id == document_id
-    ).first()
+    """删除历史记录，不删除底层可能被共用的不可变快照。"""
+    from backend.app.core.changelog import record_change
+    doc = get_document_or_404(db, document_id)
+    version = db.query(Version).filter(Version.id == version_id,
+                                      Version.document_id == document_id).first()
     if not version:
         raise HTTPException(404, "版本不存在")
-
-    if version.is_current:
-        raise HTTPException(400, "不能删除当前版本")
-
-    # 删除物理文件（如果在 .versions/ 目录中）
-    file_path = Path(version.file_path)
-    if file_path.exists() and '.versions' in str(file_path):
-        file_path.unlink()
-
-    record_change(db, "version", version.id, "delete", {"document_id": document_id})
-    db.delete(version)
+    if doc.current_version_id == version_id:
+        raise HTTPException(409, "当前版本不能删除，请先恢复到其他版本")
+    number = version.version_number
+    highest = db.query(func.max(Version.version_number)).filter(Version.document_id == document_id).scalar() or 0
+    doc.version_sequence = max(doc.version_sequence or 0, highest)
+    db.flush()
+    # 即使界面信息过时，删除语句也不能清掉当前版本。
+    referenced = exists().where(Document.current_version_id == Version.id)
+    deleted = db.query(Version).filter(Version.id == version_id,
+                                      Version.document_id == document_id,
+                                      ~referenced).delete(synchronize_session=False)
+    if not deleted:
+        db.rollback()
+        raise HTTPException(409, "版本状态已变化，请刷新后重试；当前版本不能删除")
+    record_change(db, 'version', version_id, 'delete', {
+        'document_id': document_id, 'version_number': number,
+    })
     db.commit()
-    return {"message": "版本已删除"}
+    return {"message": f"已删除 v{number}", "version_id": version_id,
+            "snapshot_retained": True}

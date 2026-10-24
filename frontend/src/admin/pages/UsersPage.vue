@@ -1,6 +1,7 @@
 <template>
   <div>
     <h2 class="page-title">用户管理</h2>
+    <p>停用账号会停止共享访问，已有资料、版本和贡献记录保留。</p>
 
     <!-- 搜索栏 -->
     <el-card class="search-card" shadow="never">
@@ -43,11 +44,6 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
-          </template>
-        </el-table-column>
       </el-table>
 
       <!-- 分页 -->
@@ -66,9 +62,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
-import { getUsers, updateUser, deleteUser } from '../api/admin'
+import { getUsers, updateUser } from '../api/admin'
 
 const users = ref([])
 const loading = ref(false)
@@ -124,21 +120,6 @@ async function toggleSuperuser(row, val) {
     ElMessage.error('操作失败')
   } finally {
     row._saving = false
-  }
-}
-
-async function handleDelete(row) {
-  await ElMessageBox.confirm(`确认删除用户 ${row.email}？此操作不可恢复。`, '删除确认', {
-    type: 'warning',
-    confirmButtonText: '删除',
-    confirmButtonClass: 'el-button--danger',
-  })
-  try {
-    await deleteUser(row.id)
-    ElMessage.success('已删除')
-    load()
-  } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '删除失败')
   }
 }
 

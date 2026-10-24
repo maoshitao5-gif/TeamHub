@@ -5,7 +5,7 @@
     width="480px"
     :close-on-click-modal="false"
     class="dup-dialog"
-    @closed="onClosed"
+    @close="onClose"
   >
     <div class="dup-body">
       <el-icon class="dup-icon" :size="40" color="#e6a23c"><WarningFilled /></el-icon>
@@ -54,26 +54,34 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'confirm', 'cancel', 'navigate'])
 
 const visible = ref(props.modelValue)
-watch(() => props.modelValue, v => { visible.value = v })
+let settled = false
+watch(() => props.modelValue, v => {
+  if (v) settled = false
+  visible.value = v
+})
 watch(visible, v => emit('update:modelValue', v))
 
 const onConfirm = () => {
+  settled = true
   visible.value = false
   emit('confirm')
 }
 
 const onCancel = () => {
+  if (settled) return
+  settled = true
   visible.value = false
   emit('cancel')
 }
 
 const onNavigate = () => {
-  visible.value = false
+  onCancel()
   emit('navigate', props.existingDoc)
 }
 
-const onClosed = () => {
+const onClose = () => {
   // 关闭时若未触发 confirm/cancel，视为取消
+  onCancel()
 }
 </script>
 

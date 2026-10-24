@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-07",
+  "scope": "仅登记本轮相对源码快照的删除，不代表整个 Git 脏工作区；不包含真实数据库或资料。",
+  "deleted_files": [
+    {
+      "path": "frontend/src/api/cloud.js",
+      "sha256": "510568e9af089047c2f31bdb13b46ed43ab1ff0855692d80dc9d6bc3423f957b",
+      "bytes": 7064,
+      "reason": "个人端统一使用本地 sync 代理；旧 localStorage 令牌客户端无现行引用。独立云网页客户端保留。"
+    },
+    {
+      "path": "frontend/src/components/PersonalFavorites.vue",
+      "sha256": "37e18915c3fa47be979f8daf10a2e1e5bd8c6f9eb658c198e7a9f65dec8d90d7",
+      "bytes": 2328,
+      "reason": "无路由、导入或动态调用；现行收藏入口由文档库页面实现。"
+    }
+  ],
+  "removed_blocks": [
+    {
+      "path": "electron/main.js; electron/preload.js",
+      "items": [
+        "download-url IPC / downloadUrl",
+        "safe-storage-* IPC / storeToken、loadToken、clearToken",
+        "未使用 validInvokeChannels"
+      ],
+      "reason": "无生产调用；现行云会话归个人后端维护，下载走已授权服务。"
+    },
+    {
+      "path": "electron/utils/port-finder.js",
+      "items": [
+        "waitForPort"
+      ],
+      "reason": "无调用，后端就绪由身份校验健康检查负责。"
+    },
+    {
+      "path": "backend/app/api/sync.py",
+      "items": [
+        "_compute_sha256",
+        "_place_file",
+        "登录时 devices/register 请求",
+        "失效 import/logger"
+      ],
+      "reason": "两个辅助函数无引用；远端设备注册已固定410，不能产生有效业务结果。"
+    },
+    {
+      "path": "backend/app/api/documents.py",
+      "items": [
+        "_count_folder"
+      ],
+      "reason": "无调用；保留现行快照、移动前后完整性校验。"
+    },
+    {
+      "path": "frontend/src/api/sync.js; frontend/src/pages/OnboardingPage.vue",
+      "items": [
+        "六个加入申请 API 包装",
+        "停用的发现/申请/审批入口"
+      ],
+      "reason": "MVP 后端已停用；现行管理员邀请与创建团队/空间仍可用。"
+    },
+    {
+      "path": "frontend/src/api/request.js",
+      "items": [
+        "data._response = response"
+      ],
+      "reason": "调用方不读取，且会创建数据/响应循环引用。"
+    },
+    {
+      "path": "frontend/vite.config.js",
+      "items": [
+        "未启用 terser 的 terserOptions"
+      ],
+      "reason": "构建实际使用 esbuild；复制资源失败改为明确失败。"
+    }
+  ],
+  "retained": [
+    "410 兼容响应",
+    "数据库字段与迁移历史",
+    "本地历史快照及来源关系",
+    "事务、完整性校验和恢复补偿",
+    "独立云网页与管理员会话",
+    "测试直接覆盖的 _compute_hash_background"
+  ]
+}

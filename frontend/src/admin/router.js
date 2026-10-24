@@ -3,6 +3,7 @@ import LoginPage from './pages/LoginPage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
 import UsersPage from './pages/UsersPage.vue'
 import TeamsPage from './pages/TeamsPage.vue'
+import { ensureSession } from '../cloud/api'
 
 const routes = [
   { path: '/login', component: LoginPage },
@@ -22,9 +23,12 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
-  const token = localStorage.getItem('admin_token')
-  if (to.meta.requiresAuth && !token) {
+router.beforeEach(async (to) => {
+  if (!to.meta.requiresAuth) return
+  try {
+    const user = await ensureSession()
+    if (!user?.is_superuser) return '/login'
+  } catch {
     return '/login'
   }
 })

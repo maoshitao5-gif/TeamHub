@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /**
  * 预加载脚本
@@ -7,25 +7,18 @@ const { contextBridge, ipcRenderer } = require('electron');
  * 这样前端就可以通过 window.electron 访问后端 URL 等信息
  */
 
-// 从主进程获取配置
-let apiBaseURL = 'http://127.0.0.1:8001'; // 默认值
-
-ipcRenderer.on('app-config', (event, config) => {
-  apiBaseURL = config.apiBaseURL;
-  console.log('[Preload] Received API base URL:', apiBaseURL);
-});
-
-// 向主进程请求配置
-ipcRenderer.send('get-app-config');
-
-// 白名单：允许 invoke 的通道
-const validInvokeChannels = ['open-path', 'show-item-in-folder', 'select-directory', 'select-file', 'check-is-directory', 'list-directory-contents', 'floating-window-drop-files', 'toggle-floating-window', 'download-url'];
+// 渲染入口执行前同步取得端口，避免首批请求误发到固定的 8001。
+const { apiBaseURL, aiCapability } = ipcRenderer.sendSync('get-app-config-sync');
 
 // 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('electron', {
   // 获取后端 API 地址
   get apiBaseURL() {
     return apiBaseURL;
+  },
+  // 仅供本机个人服务认证，不写入 renderer 持久化状态。
+  get aiCapability() {
+    return aiCapability;
   },
 
   // 检查是否在 Electron 环境中
@@ -35,7 +28,9 @@ contextBridge.exposeInMainWorld('electron', {
   platform: process.platform,
 
   // 文件操作 API
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   openPath: (fullPath) => ipcRenderer.invoke('open-path', fullPath),
+  openExternalLink: (url) => ipcRenderer.invoke('open-external-link', url),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('show-item-in-folder', fullPath),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   selectFile: () => ipcRenderer.invoke('select-file'),
@@ -65,13 +60,6 @@ contextBridge.exposeInMainWorld('electron', {
   // 悬浮窗拖拽文件
   dropFilesToFloatingWindow: (filePaths) => ipcRenderer.invoke('floating-window-drop-files', filePaths),
 
-  // 安全存储（用于保存 refresh token，使用 Electron safeStorage 加密）
-  storeToken: (key, value) => ipcRenderer.invoke('safe-storage-set', key, value),
-  loadToken: (key) => ipcRenderer.invoke('safe-storage-get', key),
-  clearToken: (key) => ipcRenderer.invoke('safe-storage-delete', key),
-
-  // 通过预签名 URL 下载文件到本机指定路径（云仓库导入流程用）
-  downloadUrl: (url, localPath) => ipcRenderer.invoke('download-url', { url, localPath }),
 });
 
 console.log('[Preload] Preload script loaded');

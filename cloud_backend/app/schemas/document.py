@@ -35,6 +35,12 @@ class VersionResponse(BaseModel):
     note: str | None
     is_current: bool
     created_at: datetime
+    # M4 新增(契约 §3.2,只增不改):发布通路写入的新列,旧字段保留过渡
+    content_hash: str | None = None
+    manifest_hash: str | None = None
+    storage_key: str | None = None
+    author_id: str | None = None
+    base_version_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -76,6 +82,13 @@ class DocumentResponse(BaseModel):
     trashed_at: datetime | None
     tags: List[TagResponse] = []
     versions: List[VersionResponse] = []
+    # M4 新增(契约 §3.1,只增不改)
+    doc_type: str | None = None
+    current_version_id: str | None = None
+    created_by: str | None = None
+    visibility: str = 'workspace'
+    access_revision: int = 1
+    capabilities: Dict[str, bool] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}
 

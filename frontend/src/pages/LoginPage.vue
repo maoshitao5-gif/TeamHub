@@ -42,8 +42,7 @@
       </el-form>
 
       <div class="login-footer">
-        还没有账号？
-        <el-link type="primary" @click="$router.push('/register')">立即注册</el-link>
+        账号由组织管理员开通，请联系管理员获取。
       </div>
     </div>
   </div>
@@ -51,12 +50,13 @@
 
 <script setup>
 import { ref, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { FolderOpened, Message, Lock } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
 const formRef = ref(null)
@@ -74,11 +74,14 @@ async function handleLogin() {
 
   loading.value = true
   try {
-    await authStore.login(form.email, form.password)
+    const loggedIn = await authStore.login(form.email, form.password)
+    if (!loggedIn) return
     ElMessage.success('登录成功')
-    router.push('/')
+    const redirect = route.query.redirect
+    router.push(typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/shared')
   } catch (e) {
-    // 错误已由 cloud.js 拦截器显示
+    // 401 不弹全局提示，由登录入口明确反馈密码或账号错误。
+    if (e.response?.status === 401) ElMessage.error(e.message || '登录失败，请检查账号和密码')
   } finally {
     loading.value = false
   }

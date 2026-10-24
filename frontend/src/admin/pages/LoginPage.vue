@@ -26,7 +26,7 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { login } from '../api/admin'
+import { login, logout } from '../api/admin'
 
 const router = useRouter()
 const formRef = ref(null)
@@ -47,15 +47,14 @@ async function handleLogin() {
     const data = res.data
     // 检查是否超管
     if (!data.user?.is_superuser) {
+      await logout()
       ElMessage.error('该账号没有管理员权限')
       return
     }
-    localStorage.setItem('admin_token', data.access_token)
-    localStorage.setItem('admin_user', JSON.stringify(data.user))
     ElMessage.success('登录成功')
     router.push('/dashboard')
   } catch (err) {
-    const msg = err.response?.data?.detail || '登录失败，请检查邮箱和密码'
+    const msg = err.response?.data?.detail || err.message || '登录失败，请检查邮箱和密码'
     ElMessage.error(msg)
   } finally {
     loading.value = false

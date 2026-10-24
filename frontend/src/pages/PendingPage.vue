@@ -1,20 +1,72 @@
 <template>
   <div class="pending-page">
     <div class="page-header">
-      <h2>待整理 <span v-if="total > 0" class="count-badge">{{ total }}</span></h2>
+      <div class="page-heading">
+        <h2>待整理 <span v-if="total > 0" class="count-badge">{{ total }}</span></h2>
+        <p>先收录，再整理。AI 可以准备方案，你确认后进入文档库。</p>
+      </div>
       <div class="header-actions">
+        <el-button type="primary" :loading="importing" @click="openImportDialog">收录本机文件</el-button>
         <el-button
           v-if="documents.length > 0"
           size="default"
           text
+          :disabled="loading"
           @click="handleSelectAll"
-        >{{ allSelected ? '取消全选' : '全选' }}</el-button>
-        <el-button size="default" @click="handleAnalyze" :loading="analyzeLoading" :disabled="total === 0">
+        >{{ allSelected ? '取消全选' : '全选本页' }}</el-button>
+        <el-button size="default" @click="handleAnalyze" :loading="analyzeLoading" :disabled="appStore.pendingCount === 0" title="扫描全部待整理资料，不受搜索条件影响">
           <el-icon><MagicStick /></el-icon>
           智能扫描
         </el-button>
       </div>
     </div>
+
+    <PreorganizePanel ref="preorganizePanel" :selected-documents="selectedDocuments" :counts="preorganizeCounts"
+      :filter="preorganizeFilter" :tags="allTags" @update:filter="changePreorganizeFilter" @refresh="refreshAfterPreorganize" />
+
+    <form class="pending-search" role="search" @submit.prevent="submitPendingSearch">
+      <el-input v-model="searchInput" clearable :prefix-icon="Search"
+        aria-label="搜索待整理资料" placeholder="搜索名称、描述、已索引正文或 AI 线索"
+        @clear="clearPendingSearch" />
+      <el-button type="primary" native-type="submit" :loading="loading">搜索</el-button>
+    </form>
+    <div v-if="activeKeyword" class="pending-search-summary">
+      <span>{{ loading ? '正在查找…' : `找到 ${total} 项待整理资料` }} · “{{ activeKeyword }}”</span>
+      <el-button link type="primary" @click="clearPendingSearch">清除搜索</el-button>
+    </div>
+    <el-alert v-if="pendingSearchError" :title="pendingSearchError" type="error" :closable="false" class="pending-search-error">
+      <el-button link type="primary" @click="fetchPending">重新加载</el-button>
+    </el-alert>
+
+    <el-dialog v-model="showImportDialog" title="收录本机文件" width="560px"
+      :close-on-click-modal="false" :close-on-press-escape="!importing && !pickingSource"
+      :show-close="!importing && !pickingSource">
+      <div class="import-source-actions" v-if="hasNativePicker">
+        <el-button :disabled="importing || pickingSource" @click="pickImportSource('file')">
+          <el-icon><Document /></el-icon>选择文件
+        </el-button>
+        <el-button :disabled="importing || pickingSource" @click="pickImportSource('folder')">
+          <el-icon><Folder /></el-icon>选择文件夹
+        </el-button>
+      </div>
+      <p v-if="importSourcePath && hasNativePicker" class="import-selected-name">{{ importSourcePath.split(/[/\\]/).filter(Boolean).at(-1) }}</p>
+      <el-form label-position="top" :disabled="importing || pickingSource" @submit.prevent="importLocalFile">
+        <el-form-item :label="hasNativePicker ? '已选路径' : '本机路径'">
+          <el-input v-model="importSourcePath" :readonly="hasNativePicker" :title="importSourcePath"
+            :placeholder="hasNativePicker ? '点击上方按钮选择文件或文件夹' : '请输入本机文件或文件夹的完整路径'" />
+        </el-form-item>
+      </el-form>
+      <p v-if="!hasNativePicker" class="import-hint">浏览器无法取得本机完整路径；桌面端支持直接选择文件或文件夹。</p>
+      <div class="import-notice">
+        <p v-if="importing" role="status">正在校验并收录，文件夹较大时需要一些时间，请勿重复操作。</p>
+        <p>收录后将移动到「待整理」，原位置不再保留。可在待整理中撤销，移回原位置。</p>
+        <p>选择文件夹时，整个文件夹作为一份资料收录。</p>
+      </div>
+      <template #footer>
+        <el-button :disabled="importing || pickingSource" @click="showImportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!importSourcePath.trim() || pickingSource" @click="importLocalFile">{{ importing ? '正在收录…' : '移动到待整理' }}</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 智能扫描结果 -->
     <div v-if="showAnalysisResult" class="analysis-result">
@@ -37,7 +89,7 @@
               <span class="group-file-meta">{{ formatFileSize(d.total_size) }}</span>
             </div>
           </div>
-          <el-button size="small" type="primary" @click="mergeGroup(group)">合并为版本</el-button>
+          <p class="group-file-meta">仅按名称提示相似资料，请分别核对内容；不会自动合并版本。</p>
         </div>
       </div>
 
@@ -96,6 +148,16 @@
           </div>
           <div class="doc-info">
             <div class="doc-name">{{ doc.name }}</div>
+            <div class="doc-preorganize" :data-testid="`preorganize-status-${doc.id}`">
+              <el-tag size="small" :type="preorganizeState(doc.preorganize?.state).type" effect="light">{{ preorganizeState(doc.preorganize?.state).label }}</el-tag>
+              <span v-if="doc.preorganize?.phase === 'queued'">已排队，轮到后自动处理</span>
+              <span v-if="doc.preorganize?.error" class="doc-preorganize-error" :title="doc.preorganize.error">{{ doc.preorganize.error }}</span>
+              <span v-else-if="doc.preorganize?.gaps?.length">有 {{ doc.preorganize.gaps.length }} 项内容需留意</span>
+            </div>
+            <div v-if="doc.is_folder || doc.tags?.length" class="doc-context">
+              <span v-if="doc.is_folder" class="folder-context">成套资料 · 保留目录结构</span>
+              <el-tag v-for="tag in doc.tags" :key="tag.id" size="small" effect="plain">{{ tag.name }}</el-tag>
+            </div>
           </div>
           <div class="doc-meta">
             <span v-if="doc.is_folder">{{ doc.file_count }} 个文件</span>
@@ -105,15 +167,20 @@
           </div>
           <div class="doc-actions">
             <el-button size="small" text @click.stop="handleOpen(doc)">打开</el-button>
-            <el-button v-if="doc.storage_mode === 'move'" size="small" text @click.stop="handleUndo(doc)">撤销</el-button>
-            <el-button size="small" type="primary" @click.stop="organizeOne(doc)">整理</el-button>
+            <el-button v-if="['copy', 'move'].includes(doc.storage_mode)" size="small" text @click.stop="handleUndo(doc)">撤销收录</el-button>
+            <el-button v-if="doc.preorganize?.state === 'ready'" size="small" type="primary" :data-testid="`preorganize-review-${doc.id}`" @click.stop="preorganizePanel?.review([doc])">确认方案</el-button>
+            <el-button v-else-if="doc.preorganize?.state === 'processing'" size="small" :data-testid="`preorganize-cancel-${doc.id}`" @click.stop="preorganizePanel?.cancel([doc])">取消预整理</el-button>
+            <el-button v-else size="small" :data-testid="`preorganize-start-${doc.id}`" @click.stop="preorganizePanel?.start([doc])">{{ doc.preorganize?.state === 'failed' ? '重试 AI' : 'AI 预整理' }}</el-button>
+            <el-button size="small" text :data-testid="`manual-organize-${doc.id}`" @click.stop="organizeOne(doc)">手工整理</el-button>
           </div>
         </div>
       </template>
 
-      <div v-else-if="!loading" class="empty-state">
-        <el-icon :size="64" color="#bdc3c7"><CircleCheck /></el-icon>
-        <p>没有待整理的文件</p>
+      <div v-else-if="!loading && !pendingSearchError" class="empty-state">
+        <el-icon :size="64" color="#bdc3c7"><Search v-if="activeKeyword || preorganizeFilter" /><CircleCheck v-else /></el-icon>
+        <p>{{ activeKeyword || preorganizeFilter ? '没有符合当前条件的待整理资料' : '没有待整理的文件' }}</p>
+        <el-button v-if="preorganizeFilter" text type="primary" @click="changePreorganizeFilter('')">查看全部状态</el-button>
+        <p v-if="activeKeyword" class="empty-search-hint">试试更短的关键词；尚未提取的内容暂不可搜索，也可清除搜索查看全部资料。</p>
       </div>
     </div>
 
@@ -133,47 +200,42 @@
       <span>已选 {{ selectedIds.length }} 项</span>
       <el-button size="small" @click="batchOrganize">批量整理</el-button>
       <el-button size="small" @click="batchTag">批量打标签</el-button>
-      <el-button size="small" @click="openMergeDialog" :disabled="selectedIds.length < 2">合并为版本</el-button>
       <el-button size="small" type="danger" @click="batchDelete">删除</el-button>
     </div>
 
-    <!-- 批量整理对话框 -->
-    <el-dialog v-model="showBatchOrganizeDialog" title="批量整理" width="520px">
-      <el-form label-width="80px">
-        <el-form-item label="存放到" required>
-          <DirectoryTreeSelector v-model="batchOrganizeForm.target_dir" />
+    <!-- 单个与批量使用相同的标签、可选文件夹控件 -->
+    <el-dialog v-model="showBatchOrganizeDialog" title="批量整理" width="560px"
+      class="organize-dialog" top="6vh" destroy-on-close :close-on-click-modal="false"
+      :close-on-press-escape="!batchOrganizeLoading" :show-close="!batchOrganizeLoading">
+      <div class="organize-summary">
+        <el-icon class="summary-icon"><CollectionTag /></el-icon>
+        <div><strong>{{ batchOrganizeSnapshot.length }} 项资料</strong><p>添加共同标签，已有标签会保留。文件夹资料仍作为整体整理。</p>
+          <p class="batch-snapshot-names" :title="batchOrganizeSnapshot.map(doc => doc.name).join('、')">{{ batchOrganizeSnapshot.map(doc => doc.name).join('、') }}</p>
+        </div>
+      </div>
+      <el-form label-position="top" class="organize-form" :disabled="batchOrganizeLoading" @submit.prevent="submitBatchOrganize">
+        <el-form-item label="查找标签" required>
+          <OrganizeTags v-model="batchOrganizeForm.tags" :tags="allTags" />
         </el-form-item>
-        <el-form-item label="标签" required>
-          <el-select
-            ref="batchOrganizeTagSelectRef"
-            v-model="batchOrganizeForm.tags"
-            multiple
-            filterable
-            allow-create
-            :filter-method="handleBatchOrganizeTagFilter"
-            :reserve-keyword="true"
-            placeholder="选择或输入标签（必填）"
-            style="width: 100%"
-            @change="handleBatchOrganizeTagChange"
-            @visible-change="handleBatchOrganizeTagVisibleChange"
-            @keydown.enter="handleBatchOrganizeTagEnter"
-          >
-            <el-option v-for="tag in filteredBatchOrganizeTags" :key="tag.id" :label="tag.name" :value="tag.name" />
-          </el-select>
-          <div class="form-item-hint">至少需要添加一个标签</div>
-        </el-form-item>
+        <OrganizeLocation v-model="batchOrganizeForm.target_dir" />
       </el-form>
       <template #footer>
-        <el-button @click="showBatchOrganizeDialog = false">取消</el-button>
-        <el-button type="primary" @click="submitBatchOrganize" :loading="batchOrganizeLoading">
-          整理 {{ selectedIds.length }} 个文档
-        </el-button>
+        <div class="dialog-footer">
+          <el-button :disabled="batchOrganizeLoading" @click="showBatchOrganizeDialog = false">取消</el-button>
+          <el-button type="primary" @click="submitBatchOrganize" :loading="batchOrganizeLoading">
+            完成 {{ batchOrganizeSnapshot.length }} 项整理
+          </el-button>
+        </div>
       </template>
     </el-dialog>
 
     <!-- 批量打标签对话框 -->
-    <el-dialog v-model="showBatchTagDialog" title="批量打标签" width="480px">
-      <el-form label-width="100px">
+    <el-dialog v-model="showBatchTagDialog" title="批量打标签" width="480px" :close-on-click-modal="false"
+      :close-on-press-escape="!batchTagLoading" :show-close="!batchTagLoading">
+      <div class="organize-summary"><div><strong>{{ batchTagSnapshot.length }} 项资料</strong>
+        <p class="batch-snapshot-names" :title="batchTagSnapshot.map(doc => doc.name).join('、')">{{ batchTagSnapshot.map(doc => doc.name).join('、') }}</p>
+      </div></div>
+      <el-form label-width="100px" :disabled="batchTagLoading">
         <el-form-item label="添加标签">
           <el-select
             v-model="batchTagForm.add_tags"
@@ -200,9 +262,9 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showBatchTagDialog = false">取消</el-button>
+        <el-button :disabled="batchTagLoading" @click="showBatchTagDialog = false">取消</el-button>
         <el-button type="primary" @click="submitBatchTag" :loading="batchTagLoading">
-          应用到 {{ selectedIds.length }} 个文档
+          应用到 {{ batchTagSnapshot.length }} 个文档
         </el-button>
       </template>
     </el-dialog>
@@ -215,99 +277,45 @@
       @deleted="() => { fetchPending(); appStore.fetchPendingCount() }"
     />
 
-    <!-- 合并为版本对话框 -->
-    <el-dialog v-model="showMergeDialog" title="合并为版本" width="520px">
-      <p style="margin-bottom: 12px; color: #7f8c8d; font-size: 13px;">
-        将选中的 {{ mergeSelectedDocs.length }} 个文档合并为同一个文档的多个版本。最新的文件将作为当前版本。
-      </p>
-      <div class="merge-doc-list">
-        <div v-for="d in mergeSelectedDocs" :key="d.id" class="merge-doc-item">
-          <span class="merge-doc-name">{{ d.name }}</span>
-          <span class="merge-doc-meta">{{ formatFileSize(d.total_size) }} · {{ formatDateTime(d.created_at) }}</span>
+    <!-- 整理：标签是主要步骤，目录为可选安排 -->
+    <el-dialog v-model="showOrganizeDialog" title="整理资料" width="560px"
+      class="organize-dialog" top="6vh" destroy-on-close :close-on-click-modal="false"
+      :close-on-press-escape="!organizeLoading" :show-close="!organizeLoading">
+      <div class="organize-summary">
+        <el-icon class="summary-icon"><Folder v-if="currentDoc?.is_folder" /><Document v-else /></el-icon>
+        <div>
+          <strong>{{ currentDoc?.name }}</strong>
+          <p>{{ currentDoc?.is_folder ? '整个文件夹作为一项资料，内部文件和目录结构保持完整。' : '加上你熟悉的查找线索，即可完成整理。' }}</p>
         </div>
       </div>
-      <el-form label-width="80px" style="margin-top: 16px;">
-        <el-form-item label="合并名称">
-          <el-input v-model="mergeForm.name" placeholder="合并后的文档名称" />
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="mergeForm.description" type="textarea" :rows="2" placeholder="可选" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showMergeDialog = false">取消</el-button>
-        <el-button type="primary" @click="submitMerge" :loading="mergeLoading">
-          合并 {{ mergeSelectedDocs.length }} 个文档
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 整理对话框 -->
-    <el-dialog 
-      v-model="showOrganizeDialog" 
-      title="整理文档" 
-      width="560px"
-      :close-on-click-modal="false"
-      class="organize-dialog"
-    >
-      <div class="organize-dialog-content">
-        <el-form label-width="100px" label-position="left" class="organize-form">
-          <el-form-item label="文档名称" class="form-item-spacing">
-            <el-input 
-              v-model="organizeForm.name" 
-              :placeholder="currentDoc?.is_folder ? '输入文件夹名称' : '输入文件名称（不含扩展名）'"
-              size="default"
-              clearable
-            />
-            <div v-if="currentDoc && !currentDoc.is_folder" class="form-item-hint">
-              <el-icon><InfoFilled /></el-icon>
-              <span>可重命名，文件扩展名将自动保留</span>
-            </div>
-          </el-form-item>
-          
-          <el-divider />
-
-          <el-form-item label="存放到" required class="form-item-spacing">
-            <DirectoryTreeSelector v-model="organizeForm.target_dir" />
-          </el-form-item>
-
-          <el-divider />
-          
-          <el-form-item label="标签" required class="form-item-spacing">
-            <el-select
-              ref="organizeTagSelectRef"
-              v-model="organizeForm.tags"
-              multiple
-              filterable
-              allow-create
-              :filter-method="handleOrganizeTagFilter"
-              :reserve-keyword="true"
-              placeholder="选择或输入标签（必填）"
-              size="default"
-              style="width: 100%"
-              @change="handleOrganizeTagChange"
-              @visible-change="handleOrganizeTagVisibleChange"
-              @keydown.enter="handleOrganizeTagEnter"
-            >
-              <el-option v-for="tag in filteredOrganizeTags" :key="tag.id" :label="tag.name" :value="tag.name" />
-            </el-select>
-            <div class="form-item-hint">
-              <el-icon><InfoFilled /></el-icon>
-              <span>至少需要添加一个标签</span>
-            </div>
-          </el-form-item>
-        </el-form>
+      <div v-if="currentDoc && !currentDoc.is_folder" class="organize-ai-action">
+        <el-button size="small" :disabled="organizeLoading" @click="showAIAssist = true" data-testid="pending-ai-assist">AI 辅助整理</el-button>
+        <span>按需推荐标签，确认后填入表单</span>
       </div>
+      <el-form label-position="top" class="organize-form" :disabled="organizeLoading" @submit.prevent="submitOrganize">
+        <el-form-item label="查找标签" required>
+          <OrganizeTags v-model="organizeForm.tags" :tags="allTags" />
+        </el-form-item>
+        <el-form-item label="资料名称">
+          <el-input v-model="organizeForm.name"
+            :placeholder="currentDoc?.is_folder ? '文件夹名称' : '文件名称（不含扩展名）'" />
+          <div v-if="currentDoc && !currentDoc.is_folder" class="form-item-hint">可选修改，文件扩展名会保留</div>
+        </el-form-item>
+        <OrganizeLocation v-model="organizeForm.target_dir" />
+      </el-form>
+      <DocumentUnderstandingCard v-if="currentDoc" :visible="showOrganizeDialog" :document="currentDoc" />
+      <DocumentIndexCard :visible="showOrganizeDialog" :document="currentDoc" />
       <template #footer>
         <div class="dialog-footer">
-          <el-button @click="showOrganizeDialog = false" size="default">取消</el-button>
-          <el-button type="primary" @click="submitOrganize" :loading="organizeLoading" size="default">
-            <el-icon v-if="!organizeLoading"><Check /></el-icon>
-            完成整理
+          <el-button :disabled="organizeLoading" @click="showOrganizeDialog = false">取消</el-button>
+          <el-button type="primary" @click="submitOrganize" :loading="organizeLoading">
+            <el-icon v-if="!organizeLoading"><Check /></el-icon>完成整理
           </el-button>
         </div>
       </template>
     </el-dialog>
+
+    <AIAssistDialog v-model="showAIAssist" :document="currentDoc" apply-label="填入整理表单" @apply="applyAITags" />
 
     <!-- 查重警告对话框 -->
     <DuplicateWarningDialog
@@ -322,7 +330,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { quickAddToPending } from '@/api/document'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { searchDocuments, organizeDocument, deleteDocument, batchOrganizeDocuments, batchUpdateTags, analyzePending, getDocument, batchDeleteDocuments, undoPending, checkDocLibraryDuplicate } from '@/api/document'
 import { getTags } from '@/api/tag'
@@ -330,10 +339,18 @@ import { scanLibrary } from '@/api/settings'
 import { useAppStore } from '@/stores/app'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatFileSize, formatDateTime } from '@/utils/format'
-import { Folder, Document, Delete, CircleCheck, Grid, DataBoard, Picture, VideoCamera, Headset, Box, Notebook, MagicStick, InfoFilled, Check, WarningFilled } from '@element-plus/icons-vue'
+import { Folder, Document, CollectionTag, CircleCheck, Grid, DataBoard, Picture, VideoCamera, Headset, Box, Notebook, MagicStick, Check, WarningFilled, Search } from '@element-plus/icons-vue'
 import DocumentDetailDrawer from '@/components/DocumentDetailDrawer.vue'
-import DirectoryTreeSelector from '@/components/DirectoryTreeSelector.vue'
+import OrganizeTags from '@/components/OrganizeTags.vue'
+import OrganizeLocation from '@/components/OrganizeLocation.vue'
 import DuplicateWarningDialog from '@/components/DuplicateWarningDialog.vue'
+import AIAssistDialog from '@/components/AIAssistDialog.vue'
+import DocumentIndexCard from '@/components/DocumentIndexCard.vue'
+import DocumentUnderstandingCard from '@/components/DocumentUnderstandingCard.vue'
+import PreorganizePanel from '@/components/PreorganizePanel.vue'
+import { listPreorganizeDocuments } from '@/api/preorganize'
+import { mergePendingSelection, preorganizeState, splitOrganizationName } from '@/utils/preorganize'
+import { appendSelectedTags } from '@/utils/aiAssist'
 import { getFileTypeIcon, getFileTypeColor } from '@/utils/fileIcons'
 
 const appStore = useAppStore()
@@ -373,74 +390,50 @@ const documents = ref([])
 const loading = ref(false)
 const total = ref(0)
 const currentPage = ref(1)
+const searchInput = ref('')
+const activeKeyword = ref('')
+const pendingSearchError = ref('')
+const preorganizePanel = ref(null)
+const preorganizeFilter = ref('')
+const preorganizeCounts = ref({})
+let pendingSearchSequence = 0
+let pageGeneration = 0, pendingController, pendingTimer, disposed = false
+const changePreorganizeFilter = value => {
+  preorganizeFilter.value = value
+  currentPage.value = 1
+  documents.value = []
+  fetchPending()
+}
+const refreshAfterPreorganize = () => {
+  fetchPending()
+  loadAllTags()
+  appStore.fetchPendingCount()
+}
+const submitPendingSearch = () => {
+  activeKeyword.value = searchInput.value.trim()
+  currentPage.value = 1
+  documents.value = []
+  fetchPending()
+}
+const clearPendingSearch = () => {
+  searchInput.value = ''
+  submitPendingSearch()
+}
 const pageSize = computed(() => appStore.settings.items_per_page || 15)
 const showOrganizeDialog = ref(false)
 const organizeLoading = ref(false)
+const showAIAssist = ref(false)
+watch(showOrganizeDialog, visible => { if (!visible) showAIAssist.value = false })
+function applyAITags(value) {
+  if (!showOrganizeDialog.value || currentDocId.value !== value.documentId || appStore.libraryPath !== value.libraryPath) return
+  organizeForm.value.tags = appendSelectedTags(organizeForm.value.tags, value.candidates, value.selected)
+  ElMessage.success('所选标签已填入，请确认后完成整理')
+}
 const currentDocId = ref(null)
-const organizeTagSelectRef = ref(null)
-const batchOrganizeTagSelectRef = ref(null)
-
-// 标签输入关键字状态
-const organizeTagKeyword = ref('')
-const batchOrganizeTagKeyword = ref('')
-
-// 计算当前正在整理的文档
-const currentDoc = computed(() => {
-  if (!currentDocId.value) return null
-  return documents.value.find(d => d.id === currentDocId.value) || null
-})
+// 编辑对象使用打开时快照，避免后台轮询或翻页使表单突然消失。
+const currentDoc = ref(null)
 
 const allTags = ref([])
-
-// 计算匹配的标签（用于整理对话框）
-const filteredOrganizeTags = computed(() => {
-  try {
-    if (!Array.isArray(allTags.value)) {
-      return []
-    }
-    const currentTags = organizeForm.value?.tags || []
-    if (!Array.isArray(currentTags)) {
-      return []
-    }
-    if (!organizeTagKeyword.value) {
-      return allTags.value.filter(tag => tag && tag.name && !currentTags.includes(tag.name))
-    }
-    const keyword = organizeTagKeyword.value.toLowerCase()
-    return allTags.value.filter(tag => {
-      if (!tag || !tag.name) return false
-      const tagName = tag.name.toLowerCase()
-      return tagName.includes(keyword) && !currentTags.includes(tag.name)
-    })
-  } catch (e) {
-    console.error('filteredOrganizeTags error:', e)
-    return []
-  }
-})
-
-// 计算匹配的标签（用于批量整理对话框）
-const filteredBatchOrganizeTags = computed(() => {
-  try {
-    if (!Array.isArray(allTags.value)) {
-      return []
-    }
-    const currentTags = batchOrganizeForm.value?.tags || []
-    if (!Array.isArray(currentTags)) {
-      return []
-    }
-    if (!batchOrganizeTagKeyword.value) {
-      return allTags.value.filter(tag => tag && tag.name && !currentTags.includes(tag.name))
-    }
-    const keyword = batchOrganizeTagKeyword.value.toLowerCase()
-    return allTags.value.filter(tag => {
-      if (!tag || !tag.name) return false
-      const tagName = tag.name.toLowerCase()
-      return tagName.includes(keyword) && !currentTags.includes(tag.name)
-    })
-  } catch (e) {
-    console.error('filteredBatchOrganizeTags error:', e)
-    return []
-  }
-})
 
 // 缺失的待整理文档
 const missingPendingDocs = ref([])
@@ -451,11 +444,14 @@ const showDetailDrawer = ref(false)
 const detailDoc = ref(null)
 
 const openDetail = async (doc) => {
+  const generation = pageGeneration
   // 始终从 API 获取最新数据
   try {
     const latest = await getDocument(doc.id)
+    if (generation !== pageGeneration || disposed) return
     detailDoc.value = { ...latest }
   } catch {
+    if (generation !== pageGeneration || disposed) return
     detailDoc.value = { ...doc }
   }
   showDetailDrawer.value = true
@@ -467,15 +463,14 @@ const handleOpen = (doc) => {
     return
   }
 
-  let fullPath = null
-  if (doc.storage_path && appStore.libraryPath) {
-    // 有存储路径，拼接文件库路径
-    // 规范化路径：统一使用反斜杠，确保 Windows 路径格式正确
-    const libPath = appStore.libraryPath.replace(/\//g, '\\').replace(/\\+$/, '') // 移除末尾的反斜杠
-    const storagePath = doc.storage_path.replace(/\//g, '\\')
-    fullPath = `${libPath}\\${storagePath}`
+  let fullPath = doc.working_path || null
+  if (fullPath) {
+    // 后端根据资料归属解析位置。
+  } else if (doc.storage_path && appStore.libraryPath) {
+    const separator = appStore.libraryPath.includes('\\') ? '\\' : '/'
+    fullPath = `${appStore.libraryPath.replace(/[/\\]+$/, '')}${separator}${doc.storage_path.replace(/[/\\]/g, separator)}`
   } else if (doc.original_path) {
-    // 索引模式：使用原始路径（已经是正确的 Windows 路径格式）
+    // 索引模式使用原始路径
     fullPath = doc.original_path
   }
 
@@ -491,10 +486,52 @@ const handleOpen = (doc) => {
   })
 }
 
+const importing = ref(false)
+const showImportDialog = ref(false)
+const importSourcePath = ref('')
+const pickingSource = ref(false)
+const hasNativePicker = Boolean(window.electron?.selectFile && window.electron?.selectDirectory)
+const openImportDialog = () => {
+  if (importing.value) return
+  importSourcePath.value = ''
+  showImportDialog.value = true
+}
+const pickImportSource = async (kind) => {
+  if (pickingSource.value || importing.value) return
+  pickingSource.value = true
+  try {
+    const path = kind === 'folder'
+      ? await window.electron.selectDirectory()
+      : await window.electron.selectFile()
+    if (path) importSourcePath.value = path
+  } catch (error) {
+    ElMessage.error(error.message || '无法打开路径选择窗口，请重试')
+  } finally { pickingSource.value = false }
+}
+const importLocalFile = async () => {
+  if (importing.value || pickingSource.value || !importSourcePath.value.trim()) return
+  importing.value = true
+  try {
+    const result = await quickAddToPending({ source_path: hasNativePicker ? importSourcePath.value : importSourcePath.value.trim() })
+    showImportDialog.value = false
+    if (result.error?.code === 'DUPLICATE_CONTENT') {
+      ElMessage.info(`内容已存在于「${result.document.name}」的 v${result.version.version_number}，原文件保留`)
+      openDetail(result.document)
+    } else {
+      ElMessage.success('已移动到待整理')
+      await fetchPending()
+      appStore.fetchPendingCount()
+      openDetail(result)
+    }
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.message || '收录失败')
+  } finally { importing.value = false }
+}
+
 const handleUndo = async (doc) => {
   try {
     await undoPending(doc.id)
-    ElMessage.success('已撤销，文件已移回原始位置')
+    ElMessage.success('已撤销收录')
     fetchPending()
     appStore.fetchPendingCount()
   } catch (e) {
@@ -511,6 +548,7 @@ const organizeForm = ref({
 const selectedIds = computed(() =>
   documents.value.filter(d => d._selected).map(d => d.id)
 )
+const selectedDocuments = computed(() => documents.value.filter(doc => doc._selected))
 
 const allSelected = computed(() =>
   documents.value.length > 0 && documents.value.every(d => d._selected)
@@ -526,227 +564,82 @@ watch(() => appStore.pendingCount, () => {
   fetchPending()
 })
 
-const fetchPending = async () => {
-  loading.value = true
+const fetchPending = async (background = false) => {
+  if (disposed) return
+  const sequence = ++pendingSearchSequence
+  pendingController?.abort()
+  pendingController = new AbortController()
+  clearTimeout(pendingTimer)
+  if (background !== true) loading.value = true
   try {
-    const data = await searchDocuments({
-      status: 'pending',
-      sort_by: 'created_at',
-      sort_order: 'desc',
+    const data = await listPreorganizeDocuments({
+      search: activeKeyword.value || undefined,
+      state: preorganizeFilter.value || undefined,
       page: currentPage.value,
       page_size: pageSize.value,
-    })
-    documents.value = data.documents.map(d => ({ ...d, _selected: false }))
+    }, pendingController.signal)
+    if (sequence !== pendingSearchSequence) return
+    pendingSearchError.value = ''
     total.value = data.total
+    preorganizeCounts.value = data.counts || {}
+    const lastPage = Math.max(1, Math.ceil(data.total / pageSize.value))
+    if (currentPage.value > lastPage) {
+      currentPage.value = lastPage
+      return fetchPending()
+    }
+    documents.value = mergePendingSelection(documents.value, data.items)
   } catch (e) {
-    console.error('Fetch pending failed:', e)
+    if (sequence !== pendingSearchSequence) return
+    pendingSearchError.value = e.message || '待整理资料加载失败，请重试'
   } finally {
-    loading.value = false
+    if (sequence === pendingSearchSequence) {
+      loading.value = false
+      pendingTimer = setTimeout(() => fetchPending(true), 4000)
+    }
   }
 }
 
 const organizeOne = async (doc) => {
+  const generation = pageGeneration
   currentDocId.value = doc.id
-  // 对于文件，显示不带扩展名的名称，方便用户重命名
-  let displayName = doc.name
-  if (!doc.is_folder && doc.name) {
-    const lastDotIndex = doc.name.lastIndexOf('.')
-    if (lastDotIndex > 0) {
-      displayName = doc.name.substring(0, lastDotIndex)
-    }
-  }
-  organizeForm.value = { name: displayName, target_dir: '', tags: [] }
-  organizeTagKeyword.value = ''
+  currentDoc.value = JSON.parse(JSON.stringify(doc))
+  const { stem: displayName } = splitOrganizationName(doc.name, doc.is_folder)
+  organizeForm.value = { name: displayName, target_dir: '', tags: (doc.tags || []).map(tag => tag.name) }
   await loadAllTags()
-  showOrganizeDialog.value = true
-}
-
-// 处理整理标签过滤
-const handleOrganizeTagFilter = (val) => {
-  organizeTagKeyword.value = val || ''
-}
-
-// 处理整理标签下拉框显示变化
-const handleOrganizeTagVisibleChange = (visible) => {
-  if (visible) {
-    const keyword = organizeTagKeyword.value.trim()
-    // 如果有关键字且没有匹配的标签，立即隐藏下拉框
-    if (keyword && filteredOrganizeTags.value.length === 0) {
-      // 使用 nextTick 确保在下拉框完全显示后再隐藏
-      nextTick(() => {
-        if (organizeTagSelectRef.value) {
-          try {
-            organizeTagSelectRef.value.blur()
-          } catch (e) {
-            console.error('Error hiding dropdown:', e)
-          }
-        }
-      })
-    }
-  }
-}
-
-// 处理整理标签回车事件
-const handleOrganizeTagEnter = async (event) => {
-  const keyword = organizeTagKeyword.value.trim()
-  if (!keyword) return
-  
-  // 阻止默认行为
-  event.preventDefault()
-  event.stopPropagation()
-  
-  // 检查是否有匹配的标签
-  const matchedTags = filteredOrganizeTags.value
-  if (matchedTags.length > 0) {
-    // 有匹配标签，选中第一个
-    const firstTag = matchedTags[0].name
-    if (!organizeForm.value?.tags?.includes(firstTag)) {
-      if (!organizeForm.value) return
-      if (!organizeForm.value.tags) {
-        organizeForm.value.tags = []
-      }
-      organizeForm.value.tags.push(firstTag)
-      organizeTagKeyword.value = ''
-      await nextTick()
-      handleOrganizeTagChange()
-    }
-  } else {
-    // 没有匹配标签，创建新标签
-    if (!organizeForm.value?.tags?.includes(keyword)) {
-      if (!organizeForm.value) return
-      if (!organizeForm.value.tags) {
-        organizeForm.value.tags = []
-      }
-      organizeForm.value.tags.push(keyword)
-      organizeTagKeyword.value = ''
-      await nextTick()
-      handleOrganizeTagChange()
-    }
-  }
-}
-
-// 处理标签输入变化，清空输入框
-const handleOrganizeTagChange = async () => {
-  await nextTick()
-  if (organizeTagSelectRef.value) {
-    // 清空 el-select 的输入框
-    const input = organizeTagSelectRef.value.$el?.querySelector('input')
-    if (input) {
-      input.value = ''
-      organizeTagKeyword.value = ''
-      // 触发 input 事件以确保组件状态更新
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-  }
-}
-
-// 处理批量整理标签过滤
-const handleBatchOrganizeTagFilter = (val) => {
-  batchOrganizeTagKeyword.value = val || ''
-}
-
-// 处理批量整理标签下拉框显示变化
-const handleBatchOrganizeTagVisibleChange = (visible) => {
-  if (visible) {
-    const keyword = batchOrganizeTagKeyword.value.trim()
-    if (keyword && filteredBatchOrganizeTags.value.length === 0) {
-      // 没有匹配标签，延迟隐藏下拉框
-      nextTick(() => {
-        if (batchOrganizeTagSelectRef.value) {
-          batchOrganizeTagSelectRef.value.blur()
-        }
-      })
-    }
-  }
-}
-
-// 处理批量整理标签回车事件
-const handleBatchOrganizeTagEnter = async (event) => {
-  const keyword = batchOrganizeTagKeyword.value.trim()
-  if (!keyword) return
-  
-  // 阻止默认行为
-  event.preventDefault()
-  event.stopPropagation()
-  
-  // 检查是否有匹配的标签
-  const matchedTags = filteredBatchOrganizeTags.value
-  if (matchedTags.length > 0) {
-    // 有匹配标签，选中第一个
-    const firstTag = matchedTags[0].name
-    if (!batchOrganizeForm.value?.tags?.includes(firstTag)) {
-      if (!batchOrganizeForm.value) return
-      if (!batchOrganizeForm.value.tags) {
-        batchOrganizeForm.value.tags = []
-      }
-      batchOrganizeForm.value.tags.push(firstTag)
-      batchOrganizeTagKeyword.value = ''
-      await nextTick()
-      handleBatchOrganizeTagChange()
-    }
-  } else {
-    // 没有匹配标签，创建新标签
-    if (!batchOrganizeForm.value?.tags?.includes(keyword)) {
-      if (!batchOrganizeForm.value) return
-      if (!batchOrganizeForm.value.tags) {
-        batchOrganizeForm.value.tags = []
-      }
-      batchOrganizeForm.value.tags.push(keyword)
-      batchOrganizeTagKeyword.value = ''
-      await nextTick()
-      handleBatchOrganizeTagChange()
-    }
-  }
-}
-
-// 处理批量整理标签输入变化，清空输入框
-const handleBatchOrganizeTagChange = async () => {
-  await nextTick()
-  if (batchOrganizeTagSelectRef.value) {
-    // 清空 el-select 的输入框
-    const input = batchOrganizeTagSelectRef.value.$el?.querySelector('input')
-    if (input) {
-      input.value = ''
-      batchOrganizeTagKeyword.value = ''
-      // 触发 input 事件以确保组件状态更新
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    }
-  }
+  if (generation === pageGeneration && !disposed) showOrganizeDialog.value = true
 }
 
 const submitOrganize = async () => {
+  if (organizeLoading.value) return
   // 验证标签必填
   if (!organizeForm.value.tags || organizeForm.value.tags.length === 0) {
     ElMessage.warning('请至少添加一个标签')
     return
   }
 
-  // target_dir 为空字符串表示放在文件库根目录，null 表示未选择
-  if (organizeForm.value.target_dir === null || organizeForm.value.target_dir === undefined) {
-    ElMessage.warning('请在目录树中选择存放位置')
-    return
-  }
-
+  const generation = pageGeneration, documentId = currentDocId.value
+  organizeLoading.value = true
   // === 整理前查重：检查同内容文件是否已在文档库 ===
   try {
-    const dupRes = await checkDocLibraryDuplicate(currentDocId.value)
+    const dupRes = await checkDocLibraryDuplicate(documentId)
+    if (generation !== pageGeneration || disposed) return
     if (dupRes?.is_duplicate && dupRes.check_succeeded) {
       const existDoc = dupRes.existing_document || dupRes.pending_document
       const confirmed = await showDuplicateWarning(existDoc)
-      if (!confirmed) return  // 用户取消
+      if (!confirmed) { organizeLoading.value = false; return }
     }
   } catch { /* 查重失败不阻塞整理 */ }
 
-  const targetDir = organizeForm.value.target_dir
-
-  organizeLoading.value = true
+  if (generation !== pageGeneration || disposed) return
+  const targetDir = organizeForm.value.target_dir || ''
   try {
-    const organizeResult = await organizeDocument(currentDocId.value, {
+    await organizeDocument(documentId, {
       target_dir: targetDir,
       tags: organizeForm.value.tags,
       name: organizeForm.value.name,
     })
-    ElMessage.success('整理完成')
+    if (generation !== pageGeneration || disposed) return
+    ElMessage.success('已整理，可在文档库通过标签找到')
     showOrganizeDialog.value = false
     showDetailDrawer.value = false
     
@@ -760,9 +653,9 @@ const submitOrganize = async () => {
     fetchPending()
     appStore.fetchPendingCount()
   } catch (e) {
-    ElMessage.error(e.message || '整理失败')
+    if (generation === pageGeneration && !disposed) ElMessage.error(e.message || '整理失败')
   } finally {
-    organizeLoading.value = false
+    if (generation === pageGeneration) organizeLoading.value = false
   }
 }
 
@@ -785,23 +678,25 @@ const handleDelete = async (doc) => {
 
 
 const loadAllTags = async () => {
+  const generation = pageGeneration
   try {
-    allTags.value = await getTags()
+    const result = await getTags()
+    if (generation === pageGeneration && !disposed) allTags.value = result
   } catch (e) {
-    allTags.value = []
+    if (generation === pageGeneration && !disposed) allTags.value = []
   }
 }
 
 const fetchMissingPendingDocs = async () => {
+  const generation = pageGeneration
   try {
     const data = await searchDocuments({ status: 'missing', page: 1, page_size: 100 })
-    const pfn = appStore.pendingFolderName || '待整理'
+    if (generation !== pageGeneration || disposed) return
     missingPendingDocs.value = data.documents.filter(d => {
-      const p = d.storage_path || ''
-      return p.startsWith(pfn + '/') || p.startsWith(pfn + '\\')
+      return d.storage_area === 'pending'
     })
   } catch {
-    missingPendingDocs.value = []
+    if (generation === pageGeneration && !disposed) missingPendingDocs.value = []
   }
 }
 
@@ -854,14 +749,6 @@ const handleAnalyze = async () => {
   }
 }
 
-const mergeGroup = (group) => {
-  // 复用合并对话框
-  mergeSelectedDocs.value = group.documents
-  mergeForm.value.name = group.suggested_name
-  mergeForm.value.description = ''
-  showMergeDialog.value = true
-}
-
 const applyTagSuggestion = async (suggestion) => {
   try {
     await batchUpdateTags({
@@ -876,82 +763,63 @@ const applyTagSuggestion = async (suggestion) => {
   }
 }
 
-// ========== 合并为版本 ==========
-const showMergeDialog = ref(false)
-const mergeLoading = ref(false)
-const mergeForm = ref({ name: '', description: '' })
-const mergeSelectedDocs = ref([])
-
-const openMergeDialog = () => {
-  const selected = documents.value.filter(d => d._selected)
-  if (selected.length < 2) {
-    ElMessage.warning('请至少选择 2 个文档')
-    return
-  }
-  mergeSelectedDocs.value = selected
-  // 默认名称取第一个文档的名称（去掉扩展名）
-  const firstName = selected[0].name
-  const dotIndex = firstName.lastIndexOf('.')
-  mergeForm.value.name = dotIndex > 0 ? firstName.substring(0, dotIndex) : firstName
-  mergeForm.value.description = ''
-  showMergeDialog.value = true
-}
-
-const submitMerge = async () => {
-  ElMessage.info('版本合并功能已迁移至云端同步，请使用推送到云端来管理版本历史')
-  showMergeDialog.value = false
-}
-
 // ========== 批量整理 ==========
 const showBatchOrganizeDialog = ref(false)
 const batchOrganizeLoading = ref(false)
 const batchOrganizeForm = ref({ target_dir: '', tags: [] })
+const batchOrganizeSnapshot = ref([])
+let batchOrganizeSequence = 0
+watch(showBatchOrganizeDialog, visible => {
+  if (!visible) { batchOrganizeSequence++; batchOrganizeSnapshot.value = []; batchOrganizeLoading.value = false }
+}, { flush: 'sync' })
 
 const batchOrganize = async () => {
+  if (batchOrganizeLoading.value) return
+  const generation = pageGeneration, sequence = ++batchOrganizeSequence
+  const snapshot = selectedDocuments.value.map(doc => ({ id: doc.id, name: doc.name }))
+  if (!snapshot.length) return
+  batchOrganizeSnapshot.value = snapshot
   batchOrganizeForm.value = { target_dir: '', tags: [] }
-  batchOrganizeTagKeyword.value = ''
   await loadAllTags()
-  showBatchOrganizeDialog.value = true
+  if (generation === pageGeneration && sequence === batchOrganizeSequence && !disposed) showBatchOrganizeDialog.value = true
 }
 
 const submitBatchOrganize = async () => {
+  if (batchOrganizeLoading.value || !showBatchOrganizeDialog.value || !batchOrganizeSnapshot.value.length) return
   // 验证标签必填
   if (!batchOrganizeForm.value.tags || batchOrganizeForm.value.tags.length === 0) {
     ElMessage.warning('请至少添加一个标签')
     return
   }
 
-  // target_dir 为空字符串表示放在文件库根目录，null 表示未选择
-  if (batchOrganizeForm.value.target_dir === null || batchOrganizeForm.value.target_dir === undefined) {
-    ElMessage.warning('请在目录树中选择存放位置')
-    return
-  }
-
+  const generation = pageGeneration, sequence = batchOrganizeSequence
+  const ids = batchOrganizeSnapshot.value.map(doc => doc.id)
   batchOrganizeLoading.value = true
   try {
     await batchOrganizeDocuments({
-      document_ids: selectedIds.value,
-      target_dir: batchOrganizeForm.value.target_dir,
-      tags: batchOrganizeForm.value.tags,
+      document_ids: ids,
+      target_dir: batchOrganizeForm.value.target_dir || '',
+      tags: [...batchOrganizeForm.value.tags],
     })
-    ElMessage.success('批量整理完成')
+    if (generation !== pageGeneration || sequence !== batchOrganizeSequence || disposed) return
+    ElMessage.success(`已完成 ${ids.length} 项整理`)
     showBatchOrganizeDialog.value = false
     showDetailDrawer.value = false
     
     // 刷新标签列表，确保新创建的标签能够在下拉列表中显示
     await loadAllTags()
+    if (generation !== pageGeneration || disposed) return
     
     // 如果当前页没有数据了，重置到第一页
-    const selectedCount = selectedIds.value.length
-    if (currentPage.value > 1 && documents.value.length <= selectedCount) {
+    if (currentPage.value > 1 && documents.value.length <= ids.length) {
       currentPage.value = 1
     }
     fetchPending()
     appStore.fetchPendingCount()
   } catch (e) {
-    ElMessage.error(e.message || '批量整理失败')
+    if (generation === pageGeneration && sequence === batchOrganizeSequence && !disposed) ElMessage.error(e.message || '批量整理失败')
   } finally {
-    batchOrganizeLoading.value = false
+    if (generation === pageGeneration && sequence === batchOrganizeSequence) batchOrganizeLoading.value = false
   }
 }
 
@@ -959,11 +827,21 @@ const submitBatchOrganize = async () => {
 const showBatchTagDialog = ref(false)
 const batchTagLoading = ref(false)
 const batchTagForm = ref({ add_tags: [], remove_tags: [] })
+const batchTagSnapshot = ref([])
+let batchTagSequence = 0
+watch(showBatchTagDialog, visible => {
+  if (!visible) { batchTagSequence++; batchTagSnapshot.value = []; batchTagLoading.value = false }
+}, { flush: 'sync' })
 
 const batchTag = async () => {
+  if (batchTagLoading.value) return
+  const generation = pageGeneration, sequence = ++batchTagSequence
+  const snapshot = selectedDocuments.value.map(doc => ({ id: doc.id, name: doc.name }))
+  if (!snapshot.length) return
+  batchTagSnapshot.value = snapshot
   batchTagForm.value = { add_tags: [], remove_tags: [] }
   await loadAllTags()
-  showBatchTagDialog.value = true
+  if (generation === pageGeneration && sequence === batchTagSequence && !disposed) showBatchTagDialog.value = true
 }
 
 // ========== 批量删除 ==========
@@ -989,28 +867,52 @@ const batchDelete = async () => {
 }
 
 const submitBatchTag = async () => {
+  if (batchTagLoading.value || !showBatchTagDialog.value || !batchTagSnapshot.value.length) return
   if (batchTagForm.value.add_tags.length === 0 && batchTagForm.value.remove_tags.length === 0) {
     ElMessage.warning('请选择要添加或移除的标签')
     return
   }
+  const generation = pageGeneration, sequence = batchTagSequence
+  const ids = batchTagSnapshot.value.map(doc => doc.id)
   batchTagLoading.value = true
   try {
     await batchUpdateTags({
-      document_ids: selectedIds.value,
-      add_tags: batchTagForm.value.add_tags,
-      remove_tags: batchTagForm.value.remove_tags,
+      document_ids: ids,
+      add_tags: [...batchTagForm.value.add_tags],
+      remove_tags: [...batchTagForm.value.remove_tags],
     })
-    ElMessage.success('批量打标签完成')
+    if (generation !== pageGeneration || sequence !== batchTagSequence || disposed) return
+    ElMessage.success(`已为 ${ids.length} 项资料更新标签`)
     showBatchTagDialog.value = false
     fetchPending()
   } catch (e) {
-    ElMessage.error(e.message || '批量打标签失败')
+    if (generation === pageGeneration && sequence === batchTagSequence && !disposed) ElMessage.error(e.message || '批量打标签失败')
   } finally {
-    batchTagLoading.value = false
+    if (generation === pageGeneration && sequence === batchTagSequence) batchTagLoading.value = false
   }
 }
 
+function resetPendingPage() {
+  pageGeneration++; pendingSearchSequence++
+  pendingController?.abort(); clearTimeout(pendingTimer)
+  documents.value = []; total.value = 0; preorganizeCounts.value = {}; pendingSearchError.value = ''
+  currentPage.value = 1; searchInput.value = ''; activeKeyword.value = ''; preorganizeFilter.value = ''
+  showOrganizeDialog.value = false; showAIAssist.value = false; currentDoc.value = null; currentDocId.value = null
+  showBatchOrganizeDialog.value = false; showBatchTagDialog.value = false; showDetailDrawer.value = false; detailDoc.value = null
+  batchOrganizeSequence++; batchTagSequence++; batchOrganizeSnapshot.value = []; batchTagSnapshot.value = []
+  showImportDialog.value = false; showAnalysisResult.value = false; missingPendingDocs.value = []; allTags.value = []
+  organizeLoading.value = false; batchOrganizeLoading.value = false; batchTagLoading.value = false
+  if (showDupDialog.value) dupCancelCallback.value?.()
+  showDupDialog.value = false
+}
+watch(() => appStore.libraryPath, () => {
+  resetPendingPage()
+  fetchPending(); loadAllTags(); fetchMissingPendingDocs()
+}, { flush: 'sync' })
+onUnmounted(() => { disposed = true; resetPendingPage() })
+
 onMounted(async () => {
+  const generation = pageGeneration
   try {
     fetchPending()
     loadAllTags()
@@ -1021,7 +923,7 @@ onMounted(async () => {
     if (highlightId) {
       try {
         const doc = await getDocument(String(highlightId))
-        if (doc) {
+        if (doc && generation === pageGeneration && !disposed) {
           detailDoc.value = { ...doc }
           showDetailDrawer.value = true
         }
@@ -1036,6 +938,29 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.doc-preorganize { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.doc-preorganize>span { font-size: 11px; color: #8a97a7; }
+.doc-preorganize .doc-preorganize-error { color: #b96257; max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pending-card .doc-meta { max-width: 120px; white-space: normal; line-height: 1.7; text-align: right; }
+.pending-card .doc-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 300px; }
+.pending-card .doc-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.organize-ai-action { display:flex; align-items:center; gap:10px; margin:0 0 16px; }
+.organize-ai-action span { color:#7f8b99; font-size:12px; }
+.pending-search { display: flex; gap: 12px; padding: 16px; margin-bottom: 16px; background: #fff; border: 1px solid #e8edf3; border-radius: 10px; }
+.pending-search .el-input { flex: 1; min-width: 0; }
+.pending-search-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 16px; color: #606266; font-size: 13px; overflow-wrap: anywhere; }
+.pending-search-error { margin-bottom: 16px; }
+.empty-search-hint { font-size: 13px; color: #909399; }
+
+.import-source-actions { display: flex; gap: 10px; margin-bottom: 20px; }
+.import-source-actions .el-button + .el-button { margin-left: 0; }
+.import-source-actions .el-icon { margin-right: 6px; }
+.import-selected-name { margin: 0 0 14px; font-weight: 600; color: #303133; overflow-wrap: anywhere; }
+.import-hint { color: #909399; font-size: 12px; line-height: 1.6; }
+.import-notice { padding: 12px 16px; border-radius: 8px; background: #f4f7fb; color: #606266; font-size: 13px; line-height: 1.7; }
+.import-notice p { margin: 0; }
+.import-notice p + p { margin-top: 6px; }
+
 .page-header {
   margin-bottom: 24px;
   display: flex;
@@ -1043,14 +968,16 @@ onMounted(async () => {
   align-items: center;
 }
 
+.page-heading p { margin: 8px 0 0; font-size: 13px; line-height: 1.6; color: #68788a; }
+
 .page-header h2 {
   font-size: 22px;
   color: #2c3e50;
 }
 
 .count-badge {
-  background: #e74c3c;
-  color: #fff;
+  background: #ecf5ff;
+  color: #337ecc;
   font-size: 14px;
   padding: 2px 10px;
   border-radius: 12px;
@@ -1210,6 +1137,31 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
+.doc-context { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 5px; }
+.folder-context { font-size: 12px; color: #7d6a4f; }
+.organize-summary { display: flex; gap: 12px; padding: 14px 16px; margin-bottom: 22px; border-radius: 8px; background: #f4f7fb; }
+.organize-summary > div { min-width: 0; }
+.organize-summary strong { display: block; font-size: 14px; color: #25364a; overflow-wrap: anywhere; }
+.organize-summary p { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: #68788a; }
+.organize-summary .batch-snapshot-names { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 440px; }
+.summary-icon { flex: 0 0 auto; padding: 9px; border-radius: 8px; background: #e8f1ff; color: #337ecc; font-size: 20px; box-sizing: content-box; }
+.organize-form :deep(.el-form-item__label) { font-weight: 600; }
+@media (max-width: 800px) {
+  .page-header { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .header-actions, .batch-bar { flex-wrap: wrap; }
+  .pending-card { flex-wrap: wrap; gap: 8px; }
+  .doc-meta { display: none; }
+}
+:deep(.organize-dialog) {
+  max-width: calc(100vw - 32px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+:deep(.organize-dialog .el-dialog__body) { overflow-y: auto; min-height: 0; }
+:deep(.organize-dialog .el-dialog__header),
+:deep(.organize-dialog .el-dialog__footer) { flex-shrink: 0; }
+
 .doc-meta {
   font-size: 12px;
   color: #aab2bd;
@@ -1255,35 +1207,6 @@ onMounted(async () => {
   font-size: 16px;
 }
 
-.merge-doc-list {
-  max-height: 200px;
-  overflow-y: auto;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-}
-
-.merge-doc-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #f0f2f5;
-}
-
-.merge-doc-item:last-child {
-  border-bottom: none;
-}
-
-.merge-doc-name {
-  font-size: 14px;
-  color: #2c3e50;
-}
-
-.merge-doc-meta {
-  font-size: 12px;
-  color: #bdc3c7;
-}
-
 .form-item-hint {
   margin-top: 6px;
   font-size: 12px;
@@ -1313,7 +1236,7 @@ onMounted(async () => {
   }
 
   .el-dialog__body {
-    padding: 24px;
+    padding: 20px 24px;
   }
 
   .el-dialog__footer {

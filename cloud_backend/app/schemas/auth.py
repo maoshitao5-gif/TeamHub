@@ -29,3 +29,8 @@ class RefreshRequest(BaseModel):
 class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class RefreshTokenResponse(AccessTokenResponse):
+    """桌面续期必须同时交付新的刷新令牌，禁止客户端继续复用旧值。"""
+    refresh_token: str = Field(min_length=1)

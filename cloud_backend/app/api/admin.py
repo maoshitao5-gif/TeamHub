@@ -9,13 +9,16 @@ PUT  /api/admin/teams/{id}     — 更新团队
 DELETE /api/admin/teams/{id}   — 解散团队
 """
 from typing import Optional
+from datetime import datetime, timezone
+from sqlalchemy import func, text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import User, Team, TeamMember, Workspace, Device, CloudChangeLog, RefreshToken
+from app.models import User, Team, TeamMember, Workspace, Device, CloudChangeLog, RefreshToken, AdminAction, CloudDocument, Delivery
 from app.core.deps import get_superuser
+from app.services.storage_usage import team_storage_usage
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -44,19 +47,25 @@ def _user_dict(u: User) -> dict:
     }
 
 
-def _team_dict(t: Team, db: Session) -> dict:
-    member_count = db.query(TeamMember).filter(TeamMember.team_id == t.id).count()
-    ws_count = db.query(Workspace).filter(Workspace.team_id == t.id).count()
-    return {
+def _team_dicts(teams: list[Team], db: Session) -> list[dict]:
+    if not teams:
+        return []
+    ids = [team.id for team in teams]
+    member_counts = dict(db.query(TeamMember.team_id, func.count(TeamMember.user_id)).filter(
+        TeamMember.team_id.in_(ids)).group_by(TeamMember.team_id).all())
+    workspace_counts = dict(db.query(Workspace.team_id, func.count(Workspace.id)).filter(
+        Workspace.team_id.in_(ids)).group_by(Workspace.team_id).all())
+    usage = team_storage_usage(db, ids)
+    return [{
         "id": t.id,
         "name": t.name,
         "slug": t.slug,
         "storage_quota": t.storage_quota,
-        "storage_used": t.storage_used,
-        "member_count": member_count,
-        "workspace_count": ws_count,
+        "storage_used": usage[t.id],
+        "member_count": member_counts.get(t.id, 0),
+        "workspace_count": workspace_counts.get(t.id, 0),
         "created_at": t.created_at.isoformat() if t.created_at else None,
-    }
+    } for t in teams]
 
 
 # ========== 统计概况 ==========
@@ -110,40 +119,56 @@ async def list_users(
     }
 
 
-@router.put("/users/{user_id}")
-async def update_user(
-    user_id: str,
-    body: UserUpdate,
-    current_admin: User = Depends(get_superuser),
-    db: Session = Depends(get_db),
-):
-    """更新用户（is_active、is_superuser）"""
-    user = db.query(User).filter(User.id == user_id).first()
+def _change_user_state(user_id, body, current_admin, db):
+    actor_id = current_admin.id
+    db.rollback()
+    db.execute(text("BEGIN IMMEDIATE"))
+    actor = db.get(User, actor_id)
+    if not actor or not actor.is_active or not actor.is_superuser:
+        raise HTTPException(403, "管理员权限已失效")
+    user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    if body.is_active is not None:
-        user.is_active = body.is_active
-    if body.is_superuser is not None:
-        user.is_superuser = body.is_superuser
+        raise HTTPException(404, "用户不存在")
+    disabling = body.is_active is False or body.is_superuser is False
+    if user.id == actor_id and disabling:
+        raise HTTPException(400, "不能停用自己或撤销自己的系统管理员权限")
+    if disabling and user.is_active and user.is_superuser:
+        active_admins = db.query(User).filter(User.is_active.is_(True), User.is_superuser.is_(True)).count()
+        if active_admins <= 1:
+            raise HTTPException(409, "必须保留至少一名可用系统管理员")
+    changes = {}
+    for key in ('is_active', 'is_superuser'):
+        value = getattr(body, key)
+        if value is not None and value != getattr(user, key):
+            changes[key] = value
+            setattr(user, key, value)
+    if body.is_active is False:
+        db.query(RefreshToken).filter(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None)).update(
+            {'revoked_at': datetime.now(timezone.utc)}, synchronize_session=False)
+    if changes:
+        db.add(AdminAction(actor_id=actor_id, action='deactivate_user' if body.is_active is False else 'update_user',
+                           target={'user_id': user.id, 'changes': changes}))
     db.commit()
     db.refresh(user)
-    return _user_dict(user)
+    return user
 
 
-@router.delete("/users/{user_id}", status_code=204)
-async def delete_user(
-    user_id: str,
-    current_admin: User = Depends(get_superuser),
-    db: Session = Depends(get_db),
-):
-    """删除用户（自动撤销所有 refresh token）"""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    if user.id == current_admin.id:
-        raise HTTPException(status_code=400, detail="不能删除自己")
-    db.delete(user)
-    db.commit()
+@router.put("/users/{user_id}")
+def update_user(user_id: str, body: UserUpdate, current_admin: User = Depends(get_superuser), db: Session = Depends(get_db)):
+    return _user_dict(_change_user_state(user_id, body, current_admin, db))
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: str, current_admin: User = Depends(get_superuser)):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=410, content={'error': {'code': 'GONE_DECOMMISSIONED',
+                        'message': '账号物理删除已停用，请停用账号以保留组织资料和贡献记录'}})
+
+
+@router.post("/users/{user_id}/deactivate")
+def deactivate_user(user_id: str, current_admin: User = Depends(get_superuser), db: Session = Depends(get_db)):
+    user = _change_user_state(user_id, UserUpdate(is_active=False), current_admin, db)
+    return {'message': '成员已停用，资料和贡献保留', 'user_id': user.id}
 
 
 # ========== 团队管理 ==========
@@ -163,7 +188,7 @@ async def list_teams(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [_team_dict(t, db) for t in teams],
+        "items": _team_dicts(teams, db),
     }
 
 
@@ -182,7 +207,7 @@ async def update_team(
         team.storage_quota = body.storage_quota
     db.commit()
     db.refresh(team)
-    return _team_dict(team, db)
+    return _team_dicts([team], db)[0]
 
 
 @router.delete("/teams/{team_id}", status_code=204)
@@ -192,8 +217,13 @@ async def delete_team(
     db: Session = Depends(get_db),
 ):
     """解散团队"""
+    db.rollback()
+    db.execute(text('BEGIN IMMEDIATE'))
     team = db.query(Team).filter(Team.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="团队不存在")
+    if (db.query(CloudDocument.id).join(Workspace).filter(Workspace.team_id == team_id).first()
+            or db.query(Delivery.id).filter_by(team_id=team_id).first()):
+        raise HTTPException(409, '团队仍有组织资料或投递记录，不能直接解散')
     db.delete(team)
     db.commit()

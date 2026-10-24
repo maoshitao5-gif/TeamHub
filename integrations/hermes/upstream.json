@@ -1,0 +1,12 @@
+{
+  "name": "hermes-agent",
+  "version": "v0.22.2",
+  "tag": "v0.22.2",
+  "source_prefix": "NousResearch-hermes-agent-7b77e29",
+  "archive_url": "https://api.github.com/repos/NousResearch/hermes-agent/tarball/v0.22.2",
+  "sha256": "db814cffb05e231a0ce54abcc997b77b690083c6395b41ddf8827ac373b6c6c0",
+  "license": "MIT",
+  "protocol_version": 1,
+  "python_version": "3.14.6",
+  "runtime_profile": "teamhub-tools-only"
+}

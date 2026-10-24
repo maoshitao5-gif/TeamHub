@@ -2,7 +2,7 @@
  * 路由配置
  * 包含本地功能页和云服务认证页
  */
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 
 const routes = [
   {
@@ -31,6 +31,12 @@ const routes = [
     meta: { title: '标签管理' }
   },
   {
+    path: '/partner',
+    name: 'AIPartner',
+    component: () => import('../pages/AIPartnerPage.vue'),
+    meta: { title: 'AI 伙伴' }
+  },
+  {
     path: '/trash',
     name: 'Trash',
     component: () => import('../pages/TrashPage.vue'),
@@ -48,7 +54,8 @@ const routes = [
     component: () => import('../pages/SharedInboxPage.vue'),
     meta: { title: '云仓库', requiresCloudAuth: true }
   },
-  { path: '/team', name: 'Team', component: () => import('../pages/TeamPage.vue'), meta: { title: '团队管理' } },
+  { path: '/deliveries', name: 'Deliveries', component: () => import('../pages/DeliveriesPage.vue'), meta: { title: '资料投递', requiresCloudAuth: true } },
+  { path: '/team', name: 'Team', component: () => import('../pages/TeamPage.vue'), meta: { title: '组织与资料库管理' } },
   { path: '/onboarding', name: 'Onboarding', component: () => import('../pages/OnboardingPage.vue'), meta: { title: '入职引导', requiresCloudAuth: true } },
   {
     path: '/setup',
@@ -59,7 +66,8 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // Electron 生产模式用 file:// 加载打包产物,hash 模式才能正常路由(与 admin 子应用一致)
+  history: createWebHashHistory(),
   routes
 })
 
@@ -68,13 +76,11 @@ router.beforeEach((to, from, next) => {
 
   if (to.meta?.requiresCloudAuth) {
     // 动态 import 避免循环依赖
-    import('../stores/auth').then(({ useAuthStore }) => {
+    import('../stores/auth').then(async ({ useAuthStore }) => {
       const authStore = useAuthStore()
+      if (!authStore.isLoggedIn) await authStore.restoreSession()
       if (!authStore.isLoggedIn) {
         next({ path: '/login', query: { redirect: to.fullPath } })
-      } else if (authStore.needsOnboarding && to.name !== 'Onboarding') {
-        // 已登录但未加入团队 → 引导入职
-        next({ path: '/onboarding' })
       } else {
         next()
       }

@@ -44,9 +44,9 @@
       <div class="mode-divider"></div>
 
       <!-- 模式切换按钮 -->
-      <div class="mode-toggle" @click.stop="toggleMode" :title="mode === 'name' ? '切换为标签搜索' : '切换为文件名搜索'">
+      <div class="mode-toggle" @click.stop="toggleMode" :title="mode === 'name' ? '切换为标签搜索' : (docSource !== null ? '切换为文件名搜索' : '切换为资料内容搜索')">
         <el-icon><Document v-if="mode === 'name'" /><CollectionTag v-else /></el-icon>
-        <span>{{ mode === 'name' ? '文件名' : '标签' }}</span>
+        <span>{{ mode === 'name' ? (docSource !== null ? '文件名' : '资料内容') : '标签' }}</span>
         <el-icon class="toggle-swap-icon"><Sort /></el-icon>
       </div>
     </div>
@@ -57,8 +57,9 @@
 
         <!-- ===== 文件名模式 ===== -->
         <template v-if="mode === 'name'">
+          <div v-if="docSource === null" class="dropdown-hint">按回车搜索名称、描述、已索引正文和 AI 线索；下方为名称联想。</div>
           <div v-if="suggestions.length === 0" class="no-result">
-            <el-icon><Search /></el-icon> 未找到匹配的文档
+            <el-icon><Search /></el-icon> 未找到匹配的文件名
           </div>
           <div
             v-for="doc in suggestions"
@@ -152,19 +153,27 @@ const hasContent = computed(() =>
 )
 
 const currentPlaceholder = computed(() => {
-  if (mode.value === 'name') return '搜索文件名...'
+  if (mode.value === 'name') return props.docSource !== null ? '搜索文件名...' : '搜索名称、正文或 AI 线索...'
   if (selectedTags.value.length > 0) return '继续添加标签缩小范围...'
   return '输入标签关键字...'
 })
 
 // ——— 防抖输入 ———
 let debounceTimer = null
-const onInput = () => {
+let blurTimer = null
+let suggestionGeneration = 0
+const cancelSuggestions = () => {
   clearTimeout(debounceTimer)
+  suggestionGeneration++
+}
+const onInput = () => {
+  cancelSuggestions()
   debounceTimer = setTimeout(fetchSuggestions, 200)
 }
 
 const fetchSuggestions = async () => {
+  const generation = ++suggestionGeneration
+  const current = () => generation === suggestionGeneration && isFocused.value
   if (mode.value === 'name') {
     const q = inputVal.value.trim()
     if (!q) {
@@ -182,10 +191,12 @@ const fetchSuggestions = async () => {
       return
     }
     try {
-      suggestions.value = await autocompleteDocuments(q)
+      const result = await autocompleteDocuments(q)
+      if (!current()) return
+      suggestions.value = result
       showDropdown.value = true
     } catch {
-      suggestions.value = []
+      if (current()) suggestions.value = []
     }
   } else {
     // 标签模式
@@ -199,10 +210,12 @@ const fetchSuggestions = async () => {
       return
     }
     try {
-      suggestions.value = await suggestTags(inputVal.value.trim())
+      const result = await suggestTags(inputVal.value.trim())
+      if (!current()) return
+      suggestions.value = result
       showDropdown.value = true
     } catch {
-      suggestions.value = []
+      if (current()) suggestions.value = []
     }
   }
 }
@@ -233,6 +246,7 @@ const fetchRelatedTags = async () => {
     }
     relatedTags.value = [...countMap.values()]
       .sort((a, b) => b.count - a.count)
+      .slice(0, 8)
       .map(({ tag, count }) => ({ ...tag, count }))
     return
   }
@@ -245,12 +259,14 @@ const fetchRelatedTags = async () => {
 
 // ——— 选择操作 ———
 const selectDoc = (doc) => {
+  cancelSuggestions()
   inputVal.value = doc.name
   showDropdown.value = false
   emit('name-search', doc.name)
 }
 
 const selectTag = (tag) => {
+  cancelSuggestions()
   if (selectedTags.value.find(t => t.id === tag.id)) return
   selectedTags.value.push(tag)
   inputVal.value = ''
@@ -274,6 +290,7 @@ const removeTag = (tag) => {
 // ——— 键盘事件 ———
 const onEnter = () => {
   if (mode.value === 'name') {
+    cancelSuggestions()
     showDropdown.value = false
     emit('name-search', inputVal.value.trim())
   } else {
@@ -293,6 +310,7 @@ const onBackspace = () => {
 
 // ——— 焦点 ———
 const onFocus = () => {
+  clearTimeout(blurTimer)
   isFocused.value = true
   if (mode.value === 'tag') {
     showDropdown.value = true
@@ -308,12 +326,14 @@ const onFocus = () => {
 }
 
 const onBlur = () => {
+  cancelSuggestions()
   isFocused.value = false
-  setTimeout(() => { showDropdown.value = false }, 180)
+  blurTimer = setTimeout(() => { if (!isFocused.value) showDropdown.value = false }, 180)
 }
 
 // ——— 模式切换 ———
 const toggleMode = () => {
+  cancelSuggestions()
   const newMode = mode.value === 'name' ? 'tag' : 'name'
   mode.value = newMode
   inputVal.value = ''
@@ -331,6 +351,7 @@ const toggleMode = () => {
 
 // ——— 清空 ———
 const clear = () => {
+  cancelSuggestions()
   inputVal.value = ''
   selectedTags.value = []
   relatedTags.value = []
@@ -345,14 +366,18 @@ const clear = () => {
 
 // ——— 高亮匹配文字 ———
 const highlightMatch = (text, query) => {
-  if (!query || !query.trim()) return text
+  const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char])
+  if (!query?.trim()) return escapeHtml(text)
   const escaped = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return text.replace(new RegExp(escaped, 'gi'), m => `<mark class="search-highlight">${m}</mark>`)
+  return String(text).split(new RegExp(`(${escaped})`, 'gi')).map((part, index) =>
+    index % 2 ? `<mark class="search-highlight">${escapeHtml(part)}</mark>` : escapeHtml(part)
+  ).join('')
 }
 
 // ——— 点击外部关闭 ———
 const handleClickOutside = (e) => {
   if (barRef.value && !barRef.value.contains(e.target)) {
+    cancelSuggestions()
     showDropdown.value = false
   }
 }
@@ -379,7 +404,8 @@ defineExpose({ setTagFilter })
 onMounted(() => document.addEventListener('mousedown', handleClickOutside))
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleClickOutside)
-  clearTimeout(debounceTimer)
+  cancelSuggestions()
+  clearTimeout(blurTimer)
 })
 </script>
 

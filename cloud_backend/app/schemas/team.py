@@ -1,6 +1,6 @@
 """团队与成员相关 Pydantic DTO"""
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -46,11 +46,11 @@ class MemberResponse(BaseModel):
 
 class MemberInvite(BaseModel):
     email: str
-    role: str = "member"
+    role: Literal["owner", "admin", "member", "viewer"] = "member"
 
 
 class MemberRoleUpdate(BaseModel):
-    role: str  # owner / admin / member / viewer
+    role: Literal["owner", "admin", "member", "viewer"]
 
 
 # ========== 加入申请 ==========

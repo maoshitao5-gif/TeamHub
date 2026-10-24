@@ -76,7 +76,7 @@ class PathHelper {
 
     if (isDev) {
       // 开发模式：使用 Python 直接运行
-      return process.platform === 'win32' ? 'python' : 'python3';
+      return path.join(__dirname, '..', '..', 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
     } else {
       // 生产模式：使用打包的可执行文件
       const exeName = process.platform === 'win32' ? 'teamhub-backend.exe' : 'teamhub-backend';

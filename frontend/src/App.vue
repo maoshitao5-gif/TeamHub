@@ -30,7 +30,7 @@
             <h1 class="app-title">TeamHub</h1>
           </div>
 
-          <!-- 主导航（文档库、待整理、标签管理 — 同等权重） -->
+          <!-- 个人资料、AI 伙伴与组织共享入口 -->
           <nav class="nav-primary">
             <div
               class="nav-item"
@@ -57,6 +57,9 @@
               <el-icon><PriceTag /></el-icon>
               <span>标签管理</span>
             </div>
+            <div class="nav-item" :class="{ 'is-active': activeMenu === '/partner' }" @click="handleMenuSelect('/partner')" data-testid="nav-ai-partner">
+              <el-icon><ChatDotRound /></el-icon><span>AI 伙伴</span>
+            </div>
             <div
               class="nav-item"
               :class="{ 'is-active': activeMenu === '/shared' }"
@@ -65,6 +68,7 @@
               <el-icon><Share /></el-icon>
               <span>云仓库</span>
             </div>
+            <div class="nav-item" :class="{ 'is-active': activeMenu === '/deliveries' }" @click="handleMenuSelect('/deliveries')"><el-icon><Share /></el-icon><span>资料投递</span><el-badge v-if="deliveryUnread" :value="deliveryUnread" /></div>
           </nav>
 
           <!-- 次级导航（回收站、设置图标、用户头像） -->
@@ -100,12 +104,12 @@
                       {{ authStore.user?.display_name }} · {{ authStore.user?.email }}
                     </el-dropdown-item>
                     <el-dropdown-item divided @click="$router.push('/team')">
-                      <el-icon><Avatar /></el-icon> 团队与工作空间
+                      <el-icon><Avatar /></el-icon> 组织管理
                     </el-dropdown-item>
                     <el-dropdown-item @click="$router.push('/settings')">
                       <el-icon><Setting /></el-icon> 设置
                     </el-dropdown-item>
-                    <el-dropdown-item divided @click="authStore.logout()">
+                    <el-dropdown-item divided @click="handleCloudLogout">
                       <el-icon><SwitchButton /></el-icon> 退出云服务
                     </el-dropdown-item>
                   </el-dropdown-menu>
@@ -124,6 +128,13 @@
       <!-- 主内容区 -->
       <el-main class="app-main">
         <div class="content-wrapper">
+          <el-alert v-if="authStore.sessionError" class="cloud-session-alert" data-testid="cloud-session-expired" :title="authStore.sessionError" type="warning" :closable="false" show-icon>
+            <el-button v-if="route.path !== '/login'" data-testid="cloud-session-login" type="primary" size="small" @click="reloginCloud">重新登录</el-button>
+          </el-alert>
+          <div v-if="isCloudPage && authStore.isLoggedIn" class="cloud-library-bar">
+            <CloudLibraryPicker :libraries="authStore.allWorkspaces" :model-value="authStore.currentWorkspace?.id || ''" :loading="authStore.workspaceLoading" @change="selectLibrary" />
+            <el-alert v-if="authStore.workspaceError && authStore.currentWorkspace && !authStore.workspaceLoading" :title="authStore.workspaceError" type="error" :closable="false" />
+          </div>
           <router-view />
         </div>
       </el-main>
@@ -217,21 +228,50 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
-import { FolderOpened, Folder, Download, PriceTag, Delete, Setting, Upload, Loading, Warning, Share, UserFilled, Avatar, SwitchButton } from '@element-plus/icons-vue'
+import { FolderOpened, Folder, Download, PriceTag, Delete, Setting, Upload, Loading, Warning, Share, UserFilled, Avatar, SwitchButton, ChatDotRound } from '@element-plus/icons-vue'
 import { h } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElButton } from 'element-plus'
 import { quickAddToPending, checkFileDuplicate, checkFolderDuplicates, undoPending } from '@/api/document'
 import SetupPage from '@/pages/SetupPage.vue'
 import WelcomePage from '@/pages/WelcomePage.vue'
+import CloudLibraryPicker from '@/components/CloudLibraryPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const isCloudPage = computed(() => ['/shared', '/deliveries'].includes(route.path))
+function reloginCloud() {
+  router.push({ path: '/login', query: { redirect: isCloudPage.value ? route.fullPath : '/shared' } })
+}
+function selectLibrary(id) {
+  const library = authStore.allWorkspaces.find(item => item.id === id)
+  if (library) authStore.switchWorkspace(library)
+}
+async function handleCloudLogout() {
+  if (!await authStore.logout()) ElMessage.error(authStore.workspaceError || '退出失败，请重试')
+}
+const deliveryUnread = ref(0)
+let deliveryTimer, deliveryGeneration=0
+watch(() => [authStore.isLoggedIn, authStore.currentWorkspace?.id, authStore.user?.id, authStore.workspaceLoading, authStore.serverId, appStore.libraryPath], async ([loggedIn, ws, _user, switching]) => {
+  clearTimeout(deliveryTimer)
+  const generation=++deliveryGeneration
+  deliveryUnread.value=0
+  if(!loggedIn || !ws || switching)return
+  const { deliveryTransport }=await import('@/api/delivery')
+  let delay=10000
+  async function poll(){
+    if(generation!==deliveryGeneration)return
+    try{const result=await deliveryTransport('GET', `/api/workspaces/${ws}/deliveries/unread-count`);if(generation===deliveryGeneration)deliveryUnread.value=result.count;delay=10000}catch{delay=Math.min(delay*2,60000)}
+    if(generation===deliveryGeneration)deliveryTimer=setTimeout(poll,document.hidden?60000:delay)
+  }
+  poll()
+}, {immediate:true, flush:'sync'})
+onBeforeUnmount(()=>{deliveryGeneration++;clearTimeout(deliveryTimer)})
 
 const showWelcome = ref(false)   // 是否显示欢迎回来页
 const forceSetup = ref(false)    // 强制显示设置页（更换文件库时）
@@ -321,32 +361,40 @@ const handleDrop = async (e) => {
   if (!files || files.length === 0) return
 
   // 检查是否在 Electron 环境
-  if (!files[0].path) {
+  if (!window.electron?.getPathForFile) {
     ElMessage.warning('拖拽上传仅在桌面应用中可用')
     return
   }
 
-  // 收集拖入的文件和文件夹信息
-  const droppedItems = []
-  for (const file of files) {
-    if (window.electron?.checkIsDirectory) {
-      const isDir = await window.electron.checkIsDirectory(file.path)
-      const name = file.path.split(/[/\\]/).pop()
-      droppedItems.push({ path: file.path, name: name, isDir: isDir })
-    } else {
-      const name = file.path.split(/[/\\]/).pop()
-      droppedItems.push({ path: file.path, name: name, isDir: false })
+  // 在首次 await 前读取原生路径，避免拖拽事件结束后无法访问数据。
+  let filePaths
+  try {
+    filePaths = Array.from(files, file => window.electron.getPathForFile(file))
+    if (filePaths.some(path => !path)) {
+      ElMessage.warning('无法读取文件路径，请从访达或文件管理器拖入本地文件')
+      return
     }
+  } catch (err) {
+    ElMessage.error(`读取拖入文件失败: ${err.message || '未知错误'}`)
+    return
   }
 
-  if (droppedItems.length === 0) return
+  await processDroppedPaths(filePaths)
+}
 
-  // 直接处理，无需确认（拖入后可通过通知栏撤销）
-  for (const item of droppedItems) {
-    if (item.isDir) {
-      await handleFolderDrop(item.path)
-    } else {
-      await handleFileDrop(item.path)
+// 主窗口与悬浮窗采用同一入口：单个路径失败不阻断其余文件。
+const processDroppedPaths = async (filePaths) => {
+  if (!appStore.libraryInitialized) return
+  for (const filePath of filePaths) {
+    try {
+      const isDir = await window.electron.checkIsDirectory(filePath)
+      if (isDir) {
+        await handleFolderDrop(filePath)
+      } else {
+        await handleFileDrop(filePath)
+      }
+    } catch (err) {
+      ElMessage.error(`处理拖入文件失败: ${err.message || '未知错误'}`)
     }
   }
 }
@@ -365,10 +413,10 @@ const handleUndo = async (docIds) => {
     }
   }
   if (succeeded > 0) {
-    ElMessage.success(docIds.length === 1 ? '已撤销，文件已移回原始位置' : `已撤销 ${succeeded} 个文件`)
+    ElMessage.success(docIds.length === 1 ? '已撤销收录' : `已撤销 ${succeeded} 个文件`)
   }
   if (failed > 0) {
-    ElMessage.error(`${failed} 个文件撤销失败（原始位置可能已有同名文件）`)
+    ElMessage.error(`${failed} 个文件撤销失败，请检查后重试`)
   }
   appStore.fetchPendingCount()
 }
@@ -377,7 +425,7 @@ const handleUndo = async (docIds) => {
 const showUndoNotification = (name, docIds) => {
   let notif = null
   notif = ElNotification({
-    title: '已添加到待整理',
+    title: '已移动到待整理',
     message: h('div', { style: 'display:flex; align-items:center; gap:8px; margin-top:4px;' }, [
       h('span', { style: 'flex:1; font-size:13px; color:#606266; word-break:break-all;' }, name),
       h(ElButton, {
@@ -411,57 +459,14 @@ const navigateToDoc = (doc) => {
 
 // 处理单个文件
 const handleFileDrop = async (filePath) => {
-  // 查重检测（优先检查已整理文档库，再检查待整理区）
-  try {
-    const checkResult = await checkFileDuplicate(filePath)
-    if (checkResult.check_succeeded && checkResult.is_duplicate) {
-      if (checkResult.duplicate_in_pending && checkResult.pending_document) {
-        // P1: 文件已在待整理区中
-        const pendingDoc = checkResult.pending_document
-        try {
-          await ElMessageBox.confirm(
-            `该文件已在待整理中（"${pendingDoc.name}"），是否仍然添加？`,
-            '发现重复文件',
-            {
-              confirmButtonText: '仍然添加',
-              cancelButtonText: '前往查看',
-              type: 'warning',
-              distinguishCancelAndClose: true,
-            }
-          )
-          // 用户选择"仍然添加"，继续执行
-        } catch (err) {
-          if (err === 'cancel') navigateToDoc(pendingDoc)
-          return  // cancel 或 close 均终止添加
-        }
-      } else if (checkResult.existing_document) {
-        // 文件已在已整理文档库中
-        const existingDoc = checkResult.existing_document
-        try {
-          await ElMessageBox.confirm(
-            `文件"${existingDoc.name}"已存在于文档库中，是否仍然添加？`,
-            '发现重复文件',
-            {
-              confirmButtonText: '仍然添加',
-              cancelButtonText: '前往查看',
-              type: 'warning',
-              distinguishCancelAndClose: true,
-            }
-          )
-          // 用户选择"仍然添加"，继续执行
-        } catch (err) {
-          if (err === 'cancel') navigateToDoc(existingDoc)
-          return  // cancel 或 close 均终止添加
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[查重] 请求失败，继续添加:', e)
-  }
-
   // 正常添加
   try {
     const doc = await quickAddToPending({ source_path: filePath, is_folder: false })
+    if (doc.error?.code === 'DUPLICATE_CONTENT') {
+      ElMessage.info(`内容已存在于「${doc.document.name}」的 v${doc.version.version_number}，本次原文件保留`)
+      navigateToDoc(doc.document)
+      return
+    }
     appStore.fetchPendingCount()
     showUndoNotification(doc.name, [doc.id])
   } catch (err) {
@@ -478,11 +483,11 @@ const handleFolderDrop = async (folderPath) => {
     let result
     try {
       result = await ElMessageBox.confirm(
-        `检测到文件夹"${folderName}"，是否要打散文件夹内的文件进行整理？\n\n选择"打散"：将文件夹内的每个文件单独添加到待整理\n选择"不打散"：将整个文件夹作为一个整理对象`,
+        `“${folderName}”可以作为一套资料收录，保留内部文件和目录结构。\n\n若其中只是互不相关的零散文件，也可以拆开，分别移动到待整理。`,
         '文件夹整理方式',
         {
-          confirmButtonText: '打散',
-          cancelButtonText: '不打散',
+          confirmButtonText: '整套收录',
+          cancelButtonText: '拆开整理',
           type: 'info',
           distinguishCancelAndClose: true
         }
@@ -496,10 +501,10 @@ const handleFolderDrop = async (folderPath) => {
       }
     }
 
-    if (result === 'confirm') {
+    if (result === 'cancel') {
       await processFolderRecursive(folderPath, folderName)
-    } else if (result === 'cancel') {
-      // 用户选择"不打散"，先对文件夹内文件做批量查重
+    } else if (result === 'confirm') {
+      // 整套收录，先对文件夹内文件做批量查重
       // P4: 显示 Loading 遮罩
       folderChecking.value = true
       let folderCheck = null
@@ -523,6 +528,11 @@ const handleFolderDrop = async (folderPath) => {
           source_path: folderPath,
           is_folder: true,
         })
+        if (doc.error?.code === 'DUPLICATE_CONTENT') {
+          ElMessage.info(`内容已存在于「${doc.document.name}」的 v${doc.version.version_number}，本次原文件保留`)
+          navigateToDoc(doc.document)
+          return
+        }
         appStore.fetchPendingCount()
         showUndoNotification(doc.name, [doc.id])
       } catch (err) {
@@ -558,32 +568,27 @@ const processFolderRecursive = async (folderPath, folderName) => {
     }
 
     for (const subFolder of contents.folders) {
+      let action
       try {
-        const result = await ElMessageBox.confirm(
-          `检测到子文件夹"${subFolder.name}"，是否要打散该子文件夹？\n\n选择"打散"：将子文件夹内的每个文件单独添加到待整理\n选择"不打散"：将整个子文件夹作为一个整理对象`,
+        await ElMessageBox.confirm(
+          `“${subFolder.name}”可保留为一套完整资料，或继续拆开其中的文件。`,
           '子文件夹整理方式',
-          {
-            confirmButtonText: '打散',
-            cancelButtonText: '不打散',
-            type: 'info',
-            distinguishCancelAndClose: true
-          }
+          { confirmButtonText: '保留整套', cancelButtonText: '继续拆开', type: 'info', distinguishCancelAndClose: true }
         )
-
-        if (result === 'confirm') {
-          await collectFiles(subFolder.path, subFolder.name)
-        } else {
-          filesToProcess.push({
-            path: subFolder.path,
-            name: subFolder.name,
-            relativePath: subFolder.path.replace(folderPath, '').replace(/^[/\\]/, ''),
-            isFolder: true
-          })
-        }
+        action = 'whole'
       } catch (err) {
-        if (err !== 'cancel') {
-          console.error('处理子文件夹失败:', subFolder.path, err)
-        }
+        if (err === 'cancel') action = 'scatter'
+        else continue
+      }
+      if (action === 'scatter') {
+        await collectFiles(subFolder.path, subFolder.name)
+      } else {
+        filesToProcess.push({
+          path: subFolder.path,
+          name: subFolder.name,
+          relativePath: subFolder.path.replace(folderPath, '').replace(/^[/\\]/, ''),
+          isFolder: true
+        })
       }
     }
   }
@@ -667,8 +672,12 @@ const processFolderRecursive = async (folderPath, folderName) => {
         source_path: item.path,
         is_folder: item.isFolder || false,
       })
-      createdDocIds.push(doc.id)
-      progressInfo.value.success++
+      if (doc.error?.code === 'DUPLICATE_CONTENT') {
+        progressInfo.value.duplicates++
+      } else {
+        createdDocIds.push(doc.id)
+        progressInfo.value.success++
+      }
     } catch (err) {
       console.error('添加文件失败:', item.path, err)
       progressInfo.value.failed++
@@ -714,21 +723,9 @@ const cancelProcessing = () => {
   processingFiles.value = false
 }
 
-// 处理悬浮窗拖拽的文件（升级：复用完整处理逻辑，跳过初始确认）
+// 悬浮窗仅传递路径，处理与错误提示同主窗口。
 if (window.electron && window.electron.on) {
-  window.electron.on('floating-window-files-dropped', async (filePaths) => {
-    if (!appStore.libraryInitialized) return
-    for (const filePath of filePaths) {
-      const isFolder = window.electron?.checkIsDirectory
-        ? await window.electron.checkIsDirectory(filePath)
-        : false
-      if (isFolder) {
-        await handleFolderDrop(filePath)
-      } else {
-        await handleFileDrop(filePath)
-      }
-    }
-  })
+  window.electron.on('floating-window-files-dropped', processDroppedPaths)
 }
 
 onMounted(async () => {
@@ -743,8 +740,7 @@ onMounted(async () => {
     showWelcome.value = true
     appStore.fetchPendingCount()
 
-    // 静默加载同步状态（供导航栏和 LibraryPage 使用）
-    appStore.fetchSyncStatus().catch(() => {})
+    // 云账号恢复统一更新同步状态；避免迟到的旧库状态覆盖当前入口。
   }
   
   // 根据悬浮窗设置控制 Electron 悬浮窗（不依赖文件库初始化）
@@ -776,6 +772,8 @@ body {
 </style>
 
 <style scoped>
+.cloud-session-alert { margin-bottom: 16px; }
+.cloud-library-bar { display: grid; gap: 12px; padding: 20px 24px; margin-bottom: 16px; background: #fff; border: 1px solid #e7edf4; border-radius: 14px; }
 .app-container {
   min-height: 100vh;
   display: flex;
@@ -835,7 +833,8 @@ body {
   flex-wrap: nowrap;
   align-items: stretch;
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .nav-item {

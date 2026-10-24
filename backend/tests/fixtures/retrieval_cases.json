@@ -1,0 +1,28 @@
+{
+  "description": "完全合成的词法检索基准；不代表真实业务或模型语义检索验收。",
+  "documents": [
+    {"key":"kunbei","name":"年度运行总结.txt","content":"昆北站设备检修情况。\n2026-10-22，5053断路器发生压力异常，检查气室密封并补气。"},
+    {"key":"chuxiong","name":"现场处理记录.txt","content":"楚雄站5053断路器压力异常，处理过程与昆北站不同。"},
+    {"key":"similar","name":"AAA压力异常记录.txt","content":"其他站点50530设备压力异常。编号ZX-204809是另一台设备。"},
+    {"key":"tail","name":"综合维修手册.txt","padding":4100,"content":"ZX-2048压力异常处置：核对压力表，再检查接头密封。"},
+    {"key":"table","name":"巡检记录.csv","content":"设备编号,参数,测量值,单位\n7302,气室压力,0.78,MPa\n7303,控制电压,220,V\n"},
+    {"key":"training","name":"培训材料.txt","content":"备用电源切换试验培训。操作前核对供电方式。"},
+    {"key":"german","name":"Straße记录.txt","content":"Straße 路径名称用于原样检索兼容测试。"},
+    {"key":"turkish","name":"İNPUT记录.txt","content":"İNPUT 是合成测试的原样标识。"},
+    {"key":"unrelated","name":"普通资料.txt","content":"采购会议纪要，与运行维护记录无关。"}
+  ],
+  "queries": [
+    {"query":"昆北站 5053 压力异常","relevant":["kunbei"]},
+    {"query":"楚雄站 5053 压力异常","relevant":["chuxiong"]},
+    {"query":"ZX-2048","relevant":["tail"]},
+    {"query":"ZX-2048 接头密封","relevant":["tail"]},
+    {"query":"7302 气室压力","relevant":["table"]},
+    {"query":"7303 控制电压","relevant":["table"]},
+    {"query":"备用电源 切换试验","relevant":["training"]},
+    {"query":"2026","relevant":["kunbei"]},
+    {"query":"Straße","relevant":["german"]},
+    {"query":"İNPUT","relevant":["turkish"]},
+    {"query":"采购 会议纪要","relevant":["unrelated"]},
+    {"query":"不存在的合成词","relevant":[]}
+  ]
+}

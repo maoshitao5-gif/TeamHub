@@ -10,17 +10,10 @@ class PortFinder {
     return new Promise((resolve) => {
       const server = net.createServer();
 
-      server.once('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-          resolve(false);
-        } else {
-          resolve(false);
-        }
-      });
+      server.once('error', () => resolve(false));
 
       server.once('listening', () => {
-        server.close();
-        resolve(true);
+        server.close(error => resolve(!error));
       });
 
       server.listen(port, '127.0.0.1');
@@ -46,29 +39,6 @@ class PortFinder {
     return null;
   }
 
-  /**
-   * 等待端口变为可用（用于等待服务启动）
-   * @param {number} port - 端口号
-   * @param {number} timeout - 超时时间（毫秒）
-   * @param {number} interval - 检查间隔（毫秒）
-   * @returns {Promise<boolean>} - 端口是否在超时前变为可用
-   */
-  static async waitForPort(port, timeout = 30000, interval = 500) {
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < timeout) {
-      const available = await this.isPortAvailable(port);
-      if (!available) {
-        // 端口被占用，说明服务已启动
-        console.log(`[PortFinder] Port ${port} is now in use (service started)`);
-        return true;
-      }
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
-
-    console.error(`[PortFinder] Timeout waiting for port ${port} to be in use`);
-    return false;
-  }
 }
 
 module.exports = PortFinder;

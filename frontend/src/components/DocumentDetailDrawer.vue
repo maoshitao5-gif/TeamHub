@@ -32,6 +32,7 @@
       <!-- 操作栏（紧接标题，顶部可见，左：文件访问；右：状态管理） -->
       <div class="detail-actions">
         <div class="detail-actions-left">
+          <el-button v-if="doc.status === 'organized'" size="small" :loading="favoriteBusy" @click="toggleFavorite">{{ favoriteId ? '取消收藏' : '收藏' }}</el-button>
           <el-button plain size="small" @click="handleOpen" :disabled="doc.status === 'missing'">
             <el-icon><FolderOpened /></el-icon>
             打开文件
@@ -40,6 +41,7 @@
             <el-icon><Position /></el-icon>
             定位到文件夹
           </el-button>
+          <el-button v-if="!doc.is_folder && ['pending', 'organized'].includes(doc.status) && doc.current_version" size="small" type="primary" plain @click="discussWithPartner" data-testid="detail-ai-partner">与 AI 讨论</el-button>
         </div>
         <div class="detail-actions-right">
           <el-button
@@ -65,6 +67,11 @@
         </div>
       </div>
 
+      <div v-if="auth.isLoggedIn && doc.status !== 'missing'" class="detail-actions">
+        <el-button size="small" @click="sendVisible=true" :disabled="!deliveryWorkspace">投递给成员</el-button>
+        <el-button size="small" :loading="remoteBusy" @click="updateFromCloud">检查并更新本地</el-button>
+      </div>
+      <DeliveryCompose v-model="sendVisible" :transport="deliveryTransport" :workspace-id="deliveryWorkspace" :doc-id="doc.id" :filename="doc.name" :identity-key="deliveryIdentity" />
       <!-- 文件缺失横幅 -->
       <el-alert
         v-if="doc.status === 'missing'"
@@ -130,9 +137,13 @@
 
       <el-divider />
 
+      <DocumentUnderstandingCard v-if="['pending', 'organized'].includes(doc.status)" :visible="modelValue" :document="doc" />
+      <DocumentIndexCard :visible="modelValue" :document="doc" />
+
       <!-- 标签编辑 -->
       <div class="detail-section">
         <h4 class="section-title">标签</h4>
+        <el-button v-if="!doc.is_folder && ['pending', 'organized'].includes(doc.status)" size="small" plain @click="showAIAssist = true" style="margin-bottom:12px" data-testid="detail-ai-assist">AI 辅助整理</el-button>
         <div class="tag-edit-row">
           <el-select
             v-model="editTags"
@@ -189,49 +200,107 @@
 
       <el-divider v-if="doc.is_folder" />
 
-      <!-- 云端版本历史（需已关联工作空间） -->
-      <div class="detail-section" v-if="doc.cloud_doc_id || doc.workspace_id">
-        <h4 class="section-title">云端版本历史</h4>
-        <div v-loading="cloudVersionLoading">
-          <div v-if="cloudVersions.length > 0" class="version-list">
-            <div v-for="ver in cloudVersions" :key="ver.id" class="version-item">
-              <div class="version-header">
-                <span class="version-number">v{{ ver.version_number }}</span>
-                <el-tag v-if="ver.is_current" size="small" type="success">当前</el-tag>
-              </div>
-              <div class="version-meta">
-                <div>{{ formatFileSize(ver.file_size) }} · {{ formatDateTime(ver.created_at) }}</div>
-              </div>
+      <div class="detail-section">
+        <h4 class="section-title">个人版本历史</h4>
+        <p class="path-text">{{ workingState.message }}</p>
+        <el-button size="small" :loading="checkingWorking" :disabled="versionBusy" @click="checkWorking">检查工作文件修改</el-button>
+        <el-alert v-if="versionBusy" title="正在处理版本或导出，请保持工作文件不变" type="info" :closable="false" />
+        <div class="add-version-row">
+          <el-input v-model="versionNote" placeholder="版本说明（选填）" :disabled="versionBusy" />
+          <el-button type="primary" :loading="versionBusy" :disabled="doc.status === 'trashed'" @click="saveLocalVersion">保存新版本</el-button>
+        </div>
+        <p class="path-text">编辑后可保存新版本；恢复会直接更新工作文件，未保存修改会自动保存为保护版本。</p>
+        <el-alert v-if="localVersionError" :title="localVersionError" type="error" :closable="false" />
+        <el-button v-if="localVersionError" text @click="loadLocalVersions">重新加载版本</el-button>
+        <div v-loading="localVersionLoading" class="version-list">
+          <div v-for="ver in localVersions" :key="ver.id" class="version-item">
+            <div class="version-header">
+              <span class="version-number">v{{ ver.version_number }}</span>
+              <el-tag v-if="ver.is_current" size="small" type="success">当前版本</el-tag>
+            </div>
+            <div class="version-meta">{{ formatFileSize(ver.file_size) }} · {{ formatDateTime(ver.created_at) }}</div>
+            <div v-if="ver.note" class="version-note">{{ ver.note }}</div>
+            <div class="version-actions">
+              <el-button size="small" :disabled="versionBusy" @click="exportLocalVersion(ver)">导出此版本</el-button>
+              <el-button v-if="!ver.is_current || ['changed', 'missing'].includes(workingState.state)" size="small" :disabled="versionBusy || doc.status === 'trashed'" @click="restoreLocalVersion(ver)">恢复到此版本</el-button>
+              <el-button v-if="!ver.is_current" size="small" type="danger" text :disabled="versionBusy" @click="deleteLocalVersion(ver)">删除版本</el-button>
             </div>
           </div>
-          <div v-else class="empty-hint">暂无云端历史版本</div>
+          <div v-if="!localVersionLoading && !localVersionError && !localVersions.length" class="empty-hint">尚无已保存版本</div>
         </div>
       </div>
+      <el-divider />
+
     </template>
   </el-drawer>
+  <AIAssistDialog v-model="showAIAssist" :document="doc" @apply="applyAITags" />
 </template>
 
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   getDocument, updateDocument, updateDocumentTags, deleteDocument,
-  getDocumentFiles, moveToPending, relocateDocument
+  getDocumentFiles, moveToPending, relocateDocument,
+  getVersions, addVersion, restoreVersion, deleteVersion, exportVersion, getWorkingState
 } from '@/api/document'
+import { getLocalFavorites, addLocalFavorite, removeFavorite } from '@/api/favorite'
+import DeliveryCompose from '@/components/delivery/DeliveryCompose.vue'
+import AIAssistDialog from '@/components/AIAssistDialog.vue'
+import DocumentIndexCard from '@/components/DocumentIndexCard.vue'
+import DocumentUnderstandingCard from '@/components/DocumentUnderstandingCard.vue'
+import { appendSelectedTags } from '@/utils/aiAssist'
+import { deliveryTransport } from '@/api/delivery'
+import request from '@/api/request'
+import { useAuthStore } from '@/stores/auth'
 import { getTags } from '@/api/tag'
 import { useAppStore } from '@/stores/app'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { h } from 'vue'
 import { formatFileSize, formatDateTime } from '@/utils/format'
 import { Edit, Folder, Document, FolderOpened, Delete, Position, Back, WarningFilled } from '@element-plus/icons-vue'
-import cloudRequest from '@/api/cloud'
 
 const props = defineProps({
   modelValue: Boolean,
   document: Object,
 })
 const emit = defineEmits(['update:modelValue', 'updated', 'deleted'])
+const router = useRouter()
+function discussWithPartner() {
+  if (!doc.value?.current_version || doc.value.is_folder || !['pending', 'organized'].includes(doc.value.status)) return
+  emit('update:modelValue', false)
+  router.push({ path: '/partner', query: { doc_id: doc.value.id } })
+}
 
 const appStore = useAppStore()
+const auth=useAuthStore(),sendVisible=ref(false),remoteBusy=ref(false)
+const deliveryWorkspace=computed(()=>auth.currentWorkspace?.id||appStore.syncStatus?.workspace_id||'')
+const deliveryIdentity=computed(()=>`${auth.user?.id || ''}:${appStore.syncStatus?.server_id || appStore.settings?.cloud_api_url || ''}:${appStore.libraryPath}`)
+async function updateFromCloud(){
+  if(!doc.value||remoteBusy.value)return
+  const documentId=doc.value.id
+  const identity=deliveryIdentity.value
+  remoteBusy.value=true
+  try{
+    const state=await request.get(`/api/sharing/links/${documentId}/remote-status`,{_silent:true})
+    if(doc.value?.id!==documentId || deliveryIdentity.value!==identity)return
+    const target=state.current_version_id || state.observed_version_id
+    if(!target){ElMessage.info('此资料尚未关联可更新的云端资料');return}
+    try{await ElMessageBox.confirm('将接收云端当前版本。未保存的工作修改会先保留为本地版本，标签、文件夹和收藏不变。','更新本地',{confirmButtonText:'更新本地',cancelButtonText:'取消'})}catch{return}
+    if(doc.value?.id!==documentId || deliveryIdentity.value!==identity)return
+    const key=`teamhub-update:${identity}:${documentId}:${target}`
+    let id=sessionStorage.getItem(key)
+    if(!id){id=crypto.randomUUID();sessionStorage.setItem(key,id)}
+    await request.post('/api/sharing/update-local',{doc_id:documentId,version_id:target,request_id:id,confirmed:true},{timeout:600000,_silent:true})
+    sessionStorage.removeItem(key)
+    ElMessage.success('本地资料已更新');emit('updated')
+    if(doc.value?.id===documentId && deliveryIdentity.value===identity){
+      await refreshDoc()
+      await loadLocalVersions()
+      await checkWorking()
+    }
+  }catch(e){ElMessage.error(e.response?.data?.error?.message||e.message||'更新失败，未覆盖工作内容')}finally{remoteBusy.value=false}
+}
 
 // 当前文档的副本
 const doc = ref(null)
@@ -251,10 +320,157 @@ const allTags = ref([])
 const editTags = ref([])
 const tagsChanged = ref(false)
 const tagSaving = ref(false)
+const showAIAssist = ref(false)
+watch(() => props.modelValue, visible => { if (!visible) showAIAssist.value = false })
+function applyAITags(value) {
+  if (!props.modelValue || doc.value?.id !== value.documentId || appStore.libraryPath !== value.libraryPath) return
+  editTags.value = appendSelectedTags(editTags.value, value.candidates, value.selected)
+  tagsChanged.value = true
+  ElMessage.success('所选标签已填入，请确认后保存标签')
+}
+
+const favoriteId = ref(null)
+const favoriteBusy = ref(false)
+let favoriteLoad = 0
+const workingState = ref({ state: 'unchecked', message: '工作文件修改尚未检查' })
+const checkingWorking = ref(false)
+async function loadFavorite() {
+  const id = doc.value?.id
+  if (!id) return
+  const sequence = ++favoriteLoad
+  favoriteBusy.value = true
+  favoriteId.value = null
+  try {
+    const items = await getLocalFavorites()
+    if (sequence === favoriteLoad && doc.value?.id === id) favoriteId.value = items.find(i => i.local_document_id === id)?.id || null
+  } catch (e) { ElMessage.error(e.message || '收藏状态读取失败') }
+  finally { if (sequence === favoriteLoad) favoriteBusy.value = false }
+}
+async function toggleFavorite() {
+  if (favoriteBusy.value || !doc.value?.id) return
+  const id = doc.value.id
+  favoriteBusy.value = true
+  try {
+    if (favoriteId.value) {
+      await removeFavorite(favoriteId.value)
+      if (doc.value?.id === id) favoriteId.value = null
+      ElMessage.success('已取消收藏，资料仍保留在全部资料中')
+    } else {
+      const item = await addLocalFavorite(id)
+      if (doc.value?.id === id) favoriteId.value = item.id
+      ElMessage.success('已加入我的收藏')
+    }
+    emit('updated')
+  } catch (e) { ElMessage.error(e.message || '收藏操作失败') }
+  finally { favoriteBusy.value = false }
+}
+async function checkWorking() {
+  const id = doc.value?.id
+  if (!id || checkingWorking.value) return
+  checkingWorking.value = true
+  try {
+    const state = await getWorkingState(id)
+    if (doc.value?.id === id) workingState.value = state
+  } catch (e) {
+    if (doc.value?.id === id) workingState.value = { state: 'unavailable', message: e.message || '修改检查失败' }
+  } finally { checkingWorking.value = false }
+}
+
+const localVersions = ref([])
+const localVersionLoading = ref(false)
+const localVersionError = ref('')
+const versionBusy = ref(false)
+const versionNote = ref('')
+
+async function loadLocalVersions() {
+  const id = doc.value?.id
+  if (!id) return
+  localVersionLoading.value = true
+  localVersionError.value = ''
+  workingState.value = { state: 'unchecked', message: '工作文件修改尚未检查' }
+  try {
+    const versions = await getVersions(id)
+    if (doc.value?.id === id) localVersions.value = versions
+  } catch (error) {
+    if (doc.value?.id === id) localVersionError.value = error.message || '版本加载失败'
+  } finally {
+    if (doc.value?.id === id) localVersionLoading.value = false
+  }
+}
+
+async function saveLocalVersion() {
+  const id = doc.value?.id
+  if (!id || versionBusy.value) return
+  versionBusy.value = true
+  try {
+    const result = await addVersion(id, { note: versionNote.value || null })
+    ElMessage.success(result.error?.code === 'CONTENT_UNCHANGED' ? '内容未变化，保留当前版本' : '新版本已保存')
+    if (doc.value?.id === id) {
+      versionNote.value = ''
+      await refreshDoc()
+      await loadLocalVersions()
+    }
+    emit('updated')
+  } catch (error) {
+    ElMessage.error(error.message || '版本保存失败')
+  } finally { versionBusy.value = false }
+}
+
+async function restoreLocalVersion(version) {
+  const id = doc.value?.id
+  if (!id || versionBusy.value) return
+  versionBusy.value = true
+  try {
+    await restoreVersion(id, version.id)
+    ElMessage.success(`已恢复到 v${version.version_number}，可直接打开使用`)
+    if (doc.value?.id === id) {
+      await refreshDoc()
+      await loadLocalVersions()
+      await checkWorking()
+    }
+    emit('updated')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.message || '恢复失败')
+  } finally { versionBusy.value = false }
+}
+
+async function deleteLocalVersion(version) {
+  const id = doc.value?.id
+  if (!id || versionBusy.value || version.is_current) return
+  versionBusy.value = true
+  try {
+    await ElMessageBox.confirm(`删除 v${version.version_number} 后，将无法从历史列表恢复或导出此版本。当前版本和工作文件不受影响。`, '删除历史版本', {
+      confirmButtonText: '删除版本', cancelButtonText: '取消', type: 'warning',
+    })
+    await deleteVersion(id, version.id)
+    ElMessage.success(`已删除 v${version.version_number}`)
+    if (doc.value?.id === id) await loadLocalVersions()
+    emit('updated')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.message || '版本删除失败')
+      if (doc.value?.id === id) await loadLocalVersions()
+    }
+  } finally { versionBusy.value = false }
+}
+
+async function exportLocalVersion(version) {
+  const id = doc.value?.id
+  if (!id || versionBusy.value) return
+  versionBusy.value = true
+  try {
+    const { value } = await ElMessageBox.prompt('请输入本机导出目录的完整路径，同名文件不会被覆盖。', `导出 v${version.version_number}`, {
+      inputPlaceholder: '导出目录', inputValidator: value => !!value?.trim() || '请输入目录',
+      confirmButtonText: '导出', cancelButtonText: '取消',
+    })
+    const result = await exportVersion(id, version.id, value.trim())
+    ElMessage.success(`已导出：${result.path}`)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.message || '导出失败')
+  } finally { versionBusy.value = false }
+}
 
 // 云端版本历史
-const cloudVersions = ref([])
-const cloudVersionLoading = ref(false)
 
 // 文件夹内容树
 const folderTree = ref([])
@@ -269,7 +485,9 @@ const storageModeMap = { move: '移动', copy: '复制', index: '仅索引' }
 const refreshDoc = async () => {
   if (!doc.value?.id) return
   try {
-    const latest = await getDocument(doc.value.id)
+    const id = doc.value.id
+    const latest = await getDocument(id)
+    if (doc.value?.id !== id) return
     console.log('[Drawer] refreshDoc API response:', { id: latest.id, storage_path: latest.storage_path, status: latest.status })
     applyDocData(latest)
   } catch (e) {
@@ -292,7 +510,8 @@ const applyDocData = (docData) => {
 watch(() => props.modelValue, async (visible) => {
   if (visible && doc.value?.id) {
     await refreshDoc()
-    loadCloudVersions()
+    loadLocalVersions()
+    loadFavorite()
     if (doc.value.is_folder) loadFolderTree()
   }
 })
@@ -300,12 +519,16 @@ watch(() => props.modelValue, async (visible) => {
 // 初始化加载：当传入文档变化时
 watch(() => props.document, async (newDoc) => {
   if (newDoc) {
+    localVersions.value = []
+    localVersionError.value = ''
+    versionNote.value = ''
     // 先用 prop 数据快速展示
     applyDocData(newDoc)
 
     // 然后从 API 获取最新数据（确保路径等信息是最新的）
     try {
       const latest = await getDocument(newDoc.id)
+      if (doc.value?.id !== newDoc.id) return
       applyDocData(latest)
     } catch {
       // API 获取失败则沿用 prop 数据
@@ -315,7 +538,8 @@ watch(() => props.document, async (newDoc) => {
     try { allTags.value = await getTags() } catch { allTags.value = [] }
 
     // 加载云端版本历史
-    loadCloudVersions()
+    loadLocalVersions()
+    loadFavorite()
 
     // 文件夹则加载文件树
     if (newDoc.is_folder) {
@@ -379,23 +603,6 @@ const saveTags = async () => {
   }
 }
 
-const loadCloudVersions = async () => {
-  if (!doc.value) return
-  // 仅已关联工作空间或从云仓库导入的文档才查云端
-  if (!doc.value.cloud_doc_id && !doc.value.workspace_id) return
-  const wsId = doc.value.workspace_id || appStore.syncStatus?.workspace_id
-  if (!wsId) return
-  cloudVersionLoading.value = true
-  try {
-    const res = await cloudRequest.get(`/api/workspaces/${wsId}/documents/${doc.value.id}/versions`)
-    cloudVersions.value = res.data || []
-  } catch {
-    cloudVersions.value = []
-  } finally {
-    cloudVersionLoading.value = false
-  }
-}
-
 const loadFolderTree = async () => {
   if (!doc.value) return
   folderTreeLoading.value = true
@@ -416,12 +623,10 @@ const handleTreeNodeClick = (data) => {
 }
 
 const getFullPath = () => {
+  if (doc.value.working_path) return doc.value.working_path
   if (doc.value.storage_path && appStore.libraryPath) {
-    // 规范化路径：先统一使用反斜杠，然后替换为正确的格式
-    const libPath = appStore.libraryPath.replace(/\//g, '\\').replace(/\\+$/, '') // 移除末尾的反斜杠
-    const storagePath = doc.value.storage_path.replace(/\//g, '\\')
-    const fullPath = `${libPath}\\${storagePath}`
-    return fullPath
+    const separator = appStore.libraryPath.includes('\\') ? '\\' : '/'
+    return `${appStore.libraryPath.replace(/[/\\]+$/, '')}${separator}${doc.value.storage_path.replace(/[/\\]/g, separator)}`
   }
   if (doc.value.original_path) {
     // 对于 original_path，保持原样（已经是正确的 Windows 路径格式）
@@ -505,10 +710,7 @@ const handleMoveToPending = async () => {
   }
 }
 
-const isMissingFromPending = computed(() => {
-  const p = doc.value?.storage_path || ''
-  return p.startsWith('待整理/') || p.startsWith('待整理\\')
-})
+const isMissingFromPending = computed(() => doc.value?.storage_area === 'pending')
 
 const handleRelocateMissing = async () => {
   let newPath = null

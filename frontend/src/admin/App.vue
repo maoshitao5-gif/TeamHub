@@ -49,7 +49,8 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElMessage } from 'element-plus'
+import { logout, webSession } from './api/admin'
 import { DataLine, User, OfficeBuilding } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -57,19 +58,16 @@ const router = useRouter()
 
 const isLoginPage = computed(() => route.path === '/login')
 const activeMenu = computed(() => route.path)
-const currentUser = computed(() => {
-  try {
-    return JSON.parse(localStorage.getItem('admin_user') || 'null')
-  } catch {
-    return null
-  }
-})
+const currentUser = computed(() => webSession.user)
 
 async function handleLogout() {
-  await ElMessageBox.confirm('确认退出登录？', '退出', { type: 'warning' })
-  localStorage.removeItem('admin_token')
-  localStorage.removeItem('admin_user')
-  router.push('/login')
+  try {
+    await ElMessageBox.confirm('确认退出登录？', '退出', { type: 'warning' })
+    await logout()
+    router.push('/login')
+  } catch (error) {
+    if (error instanceof Error) ElMessage.error(`退出未完成：${error.message}`)
+  }
 }
 </script>
 

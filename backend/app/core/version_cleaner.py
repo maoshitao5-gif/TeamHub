@@ -1,11 +1,10 @@
 """
-版本自动清理模块
-按 max_versions 和 max_version_age_days 策略删除过期版本
-"""
-import os
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+版本自动清理模块(M2 起停用)
 
+旧实现按 max_versions / max_version_age_days 自动删除版本文件与记录,
+在不可变快照语义下可能删除仍被引用的历史内容(蓝图附录 B)。
+M2 改为只记日志的 no-op;版本 GC 待后续里程碑以引用计数方式重新实现。
+"""
 from backend.app.core.logger import get_logger
 
 logger = get_logger("version_cleaner")
@@ -13,77 +12,14 @@ logger = get_logger("version_cleaner")
 
 def cleanup_old_versions(max_versions: int, max_age_days: int, library_path: str) -> int:
     """
-    清理超出限制的版本
+    自动版本清理已停用(M2)。
 
-    Args:
-        max_versions: 每个文档最多保留的版本数，0 表示不限制
-        max_age_days: 版本最长保留天数，0 表示不限制
-        library_path: 文件库路径
-    Returns:
-        删除的版本记录数
+    保留函数签名以兼容调用方;不删除任何版本记录或快照对象,
+    仅在有限制条件配置时记录一条日志。
     """
-    from backend.app.database import SessionLocal
-    from backend.app.models import Document, Version
-
-    db = SessionLocal()
-    deleted = 0
-
-    try:
-        if max_versions <= 0 and max_age_days <= 0:
-            logger.info("版本清理：未设置限制条件，跳过")
-            return 0
-
-        # 按版本数限制清理
-        if max_versions > 0:
-            docs = db.query(Document).filter(
-                Document.status.in_(["organized", "pending", "missing"])
-            ).all()
-            for doc in docs:
-                versions = db.query(Version).filter(
-                    Version.document_id == doc.id
-                ).order_by(Version.version_number.desc()).all()
-
-                if len(versions) <= max_versions:
-                    continue
-
-                to_delete = versions[max_versions:]
-                for v in to_delete:
-                    if v.is_current:
-                        continue  # 不删除当前版本
-                    try:
-                        file_path = Path(v.file_path)
-                        if file_path.exists() and '.versions' in str(file_path):
-                            file_path.unlink()
-                            logger.debug(f"删除版本文件: {file_path}")
-                    except OSError as e:
-                        logger.warning(f"删除版本文件失败: {e}")
-                    db.delete(v)
-                    deleted += 1
-
-        # 按时间限制清理
-        if max_age_days > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-            old_versions = db.query(Version).filter(
-                Version.created_at < cutoff,
-                Version.is_current == False  # noqa: E712
-            ).all()
-            for v in old_versions:
-                try:
-                    file_path = Path(v.file_path)
-                    if file_path.exists() and '.versions' in str(file_path):
-                        file_path.unlink()
-                        logger.debug(f"删除过期版本文件: {file_path}")
-                except OSError as e:
-                    logger.warning(f"删除过期版本文件失败: {e}")
-                db.delete(v)
-                deleted += 1
-
-        db.commit()
-        logger.info(f"版本清理完成，共删除 {deleted} 个版本")
-    except Exception as e:
-        logger.error(f"版本清理失败: {e}")
-        db.rollback()
-    finally:
-        db.close()
-
-    return deleted
+    if max_versions > 0 or max_age_days > 0:
+        logger.info(
+            "版本自动清理已停用(M2 不可变快照语义,GC 待引用计数实现);"
+            f"请求参数 max_versions={max_versions}, max_age_days={max_age_days}, 未执行删除"
+        )
+    return 0

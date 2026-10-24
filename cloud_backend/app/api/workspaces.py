@@ -8,10 +8,12 @@ DELETE /api/workspaces/{ws_id}
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_, select, text
 from typing import List
 
 from app.database import get_db
-from app.models import User, Team, TeamMember, Workspace, CloudChangeLog, Device
+from app.models import User, Team, TeamMember, Workspace, CloudChangeLog, Device, CloudDocument, CloudVersion, Delivery
+from app.services.access import visible_document_clause
 from app.core.deps import get_current_user, check_workspace_access, ROLE_RANK
 from app.schemas.workspace import WorkspaceCreate, WorkspaceUpdate, WorkspaceResponse
 
@@ -96,8 +98,13 @@ async def delete_workspace(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    db.rollback()
+    db.execute(text('BEGIN IMMEDIATE'))
     ws = _get_ws_or_404(ws_id, db)
     _check_team_access(ws.team_id, current_user.id, "admin", db)
+    if (db.query(CloudDocument.id).filter_by(workspace_id=ws_id).first()
+            or db.query(Delivery.id).filter_by(workspace_id=ws_id).first()):
+        raise HTTPException(409, '空间仍有组织资料或投递记录，不能直接删除')
     db.delete(ws)
     db.commit()
 
@@ -117,6 +124,15 @@ async def workspace_activity(
     logs = (
         db.query(CloudChangeLog)
         .filter(CloudChangeLog.workspace_id == ws_id)
+        .filter(or_(
+            and_(CloudChangeLog.entity_type == 'document', CloudChangeLog.entity_id.in_(
+                select(CloudDocument.id).where(CloudDocument.workspace_id == ws_id,
+                    CloudDocument.trashed_at.is_(None), visible_document_clause(current_user.id)))),
+            and_(CloudChangeLog.entity_type == 'version', CloudChangeLog.entity_id.in_(
+                select(CloudVersion.id).join(CloudDocument, CloudVersion.document_id == CloudDocument.id)
+                .where(CloudDocument.workspace_id == ws_id, CloudDocument.trashed_at.is_(None),
+                       visible_document_clause(current_user.id)))),
+        ))
         .order_by(CloudChangeLog.created_at.desc())
         .limit(limit)
         .all()
@@ -139,7 +155,8 @@ async def workspace_activity(
             "entity_type": log.entity_type,
             "entity_id": log.entity_id,
             "operation": log.operation,
-            "payload": log.payload or {},
+            # Legacy payloads are arbitrary snapshots, so never forward nested resource data.
+            "payload": {},
             "device_id": log.device_id,
             "user_display_name": device_user_map.get(log.device_id),
             "created_at": log.created_at.isoformat(),

@@ -85,10 +85,16 @@
       return;
     }
 
-    var filePaths = files.map(function (f) { return f.path; }).filter(function (p) { return p && p.length > 0; });
-
-    if (filePaths.length === 0) {
-      setStatus('NO PATHS');
+    var filePaths;
+    try {
+      filePaths = files.map(function (f) { return window.electron.getPathForFile(f); });
+      if (filePaths.some(function (p) { return !p; })) {
+        setStatus('请拖入本地文件');
+        btn.classList.add('idle');
+        return;
+      }
+    } catch (err) {
+      setStatus('读取文件路径失败');
       btn.classList.add('idle');
       return;
     }

@@ -12,13 +12,14 @@ DELETE /api/teams/{team_id}/members/{user_id}
 """
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, text
+from sqlalchemy.orm import Session, selectinload
 from typing import List
 
 from app.database import get_db
-from app.models import User, Team, TeamMember, Workspace, JoinRequest
-from app.core.deps import get_current_user, require_team_member, ROLE_RANK
+from app.models import User, Team, TeamMember, Workspace, JoinRequest, CloudDocument, Delivery
+from app.core.deps import get_current_user, ROLE_RANK
+from app.services.storage_usage import team_storage_usage
 from app.schemas.team import (
     TeamCreate, TeamUpdate, TeamResponse, TeamDiscoverResponse,
     MemberResponse, MemberInvite, MemberRoleUpdate,
@@ -26,6 +27,12 @@ from app.schemas.team import (
 )
 
 router = APIRouter(prefix="/api/teams", tags=["团队"])
+
+
+def _team_response(team, storage_used):
+    result = TeamResponse.model_validate(team)
+    result.storage_used = storage_used
+    return result
 
 
 def _get_team_or_404(team_id: str, db: Session) -> Team:
@@ -62,7 +69,7 @@ async def create_team(
     db.add(membership)
     db.commit()
     db.refresh(team)
-    return team
+    return _team_response(team, 0)
 
 
 @router.get("", response_model=List[TeamResponse])
@@ -73,7 +80,9 @@ async def list_teams(
     """列出当前用户所属的团队"""
     memberships = db.query(TeamMember).filter(TeamMember.user_id == current_user.id).all()
     team_ids = [m.team_id for m in memberships]
-    return db.query(Team).filter(Team.id.in_(team_ids)).all()
+    teams = db.query(Team).filter(Team.id.in_(team_ids)).all()
+    usage = team_storage_usage(db, team_ids)
+    return [_team_response(team, usage[team.id]) for team in teams]
 
 
 @router.get("/{team_id}", response_model=TeamResponse)
@@ -84,7 +93,7 @@ async def get_team(
 ):
     team = _get_team_or_404(team_id, db)
     _get_membership(team_id, current_user.id, db)
-    return team
+    return _team_response(team, team_storage_usage(db, [team_id])[team_id])
 
 
 @router.put("/{team_id}", response_model=TeamResponse)
@@ -103,7 +112,7 @@ async def update_team(
         team.name = body.name
     db.commit()
     db.refresh(team)
-    return team
+    return _team_response(team, team_storage_usage(db, [team_id])[team_id])
 
 
 @router.delete("/{team_id}", status_code=204)
@@ -112,10 +121,15 @@ async def delete_team(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    db.rollback()
+    db.execute(text('BEGIN IMMEDIATE'))
     team = _get_team_or_404(team_id, db)
     m = _get_membership(team_id, current_user.id, db)
     if m.role != "owner":
         raise HTTPException(status_code=403, detail="只有 owner 才能解散团队")
+    if (db.query(CloudDocument.id).join(Workspace).filter(Workspace.team_id == team_id).first()
+            or db.query(Delivery.id).filter_by(team_id=team_id).first()):
+        raise HTTPException(409, '团队仍有组织资料或投递记录，不能直接解散')
     db.delete(team)
     db.commit()
 
@@ -131,7 +145,8 @@ async def list_members(
     _get_team_or_404(team_id, db)
     _get_membership(team_id, current_user.id, db)
 
-    memberships = db.query(TeamMember).filter(TeamMember.team_id == team_id).all()
+    memberships = db.query(TeamMember).options(selectinload(TeamMember.user)).filter(
+        TeamMember.team_id == team_id).all()
     result = []
     for m in memberships:
         result.append(MemberResponse(
@@ -152,14 +167,24 @@ async def invite_member(
     db: Session = Depends(get_db),
 ):
     """通过邮箱邀请用户加入团队"""
+    actor_id = current_user.id
+    db.rollback()
+    db.execute(text("BEGIN IMMEDIATE"))
+    actor = db.get(User, actor_id)
+    if not actor or not actor.is_active:
+        raise HTTPException(403, "账号已停用")
     _get_team_or_404(team_id, db)
-    m = _get_membership(team_id, current_user.id, db)
+    m = _get_membership(team_id, actor_id, db)
     if ROLE_RANK.get(m.role, 0) < ROLE_RANK["admin"]:
         raise HTTPException(status_code=403, detail="需要管理员权限才能邀请成员")
+    if body.role == "owner" and m.role != "owner":
+        raise HTTPException(403, "仅团队拥有者可以授予拥有者角色")
 
     target = db.query(User).filter(User.email == body.email).first()
     if not target:
         raise HTTPException(status_code=404, detail="用户不存在，请先注册")
+    if not target.is_active:
+        raise HTTPException(400, "不能邀请已停用账号")
 
     existing = db.query(TeamMember).filter(
         TeamMember.team_id == team_id, TeamMember.user_id == target.id
@@ -190,8 +215,14 @@ async def update_member_role(
     db: Session = Depends(get_db),
 ):
     """修改成员角色"""
+    actor_id = current_user.id
+    db.rollback()
+    db.execute(text("BEGIN IMMEDIATE"))
+    actor = db.get(User, actor_id)
+    if not actor or not actor.is_active:
+        raise HTTPException(403, "账号已停用")
     _get_team_or_404(team_id, db)
-    m = _get_membership(team_id, current_user.id, db)
+    m = _get_membership(team_id, actor_id, db)
     if ROLE_RANK.get(m.role, 0) < ROLE_RANK["admin"]:
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
@@ -200,6 +231,17 @@ async def update_member_role(
     ).first()
     if not target_m:
         raise HTTPException(status_code=404, detail="成员不存在")
+    if (target_m.role == "owner" or body.role == "owner") and m.role != "owner":
+        raise HTTPException(403, "仅团队拥有者可以变更拥有者角色")
+    if body.role == "owner" and not target_m.user.is_active:
+        raise HTTPException(400, "不能向已停用账号转让所有权")
+    if target_m.role == "owner" and body.role != "owner":
+        another_owner = db.query(TeamMember.user_id).join(User, User.id == TeamMember.user_id).filter(
+            TeamMember.team_id == team_id, TeamMember.role == "owner",
+            TeamMember.user_id != user_id, User.is_active.is_(True),
+        ).first()
+        if not another_owner:
+            raise HTTPException(409, "必须保留至少一名可用团队拥有者，请先转让所有权")
 
     target_m.role = body.role
     db.commit()

@@ -30,7 +30,7 @@
               </div>
               <div class="stat-content">
                 <div class="stat-value">{{ totalFiles }}</div>
-                <div class="stat-label">关联文件总数</div>
+                <div class="stat-label">关联资料总数</div>
               </div>
             </div>
           </el-col>
@@ -41,7 +41,7 @@
               </div>
               <div class="stat-content">
                 <div class="stat-value">{{ avgFilesPerTag.toFixed(1) }}</div>
-                <div class="stat-label">平均每个标签关联文件数</div>
+                <div class="stat-label">平均每个标签关联资料数</div>
               </div>
             </div>
           </el-col>
@@ -101,6 +101,7 @@
         </div>
       </template>
 
+      <p class="tag-delete-hint">关联资料数包含已整理、待整理、回收站和缺失资料；只有关联数为 0 的标签可以删除。</p>
       <el-table
         ref="tableRef"
         :data="pagedTagStats"
@@ -134,7 +135,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="file_count" label="关联文件数" width="160" align="center">
+        <el-table-column prop="file_count" label="关联资料数" width="220" align="center">
           <template #default="{ row }">
             <div class="file-count-cell">
               <el-icon class="file-count-icon"><Document /></el-icon>
@@ -142,6 +143,7 @@
                 {{ row.file_count }}
               </span>
             </div>
+            <div class="usage-breakdown">{{ usageDescription(row) }}</div>
           </template>
         </el-table-column>
 
@@ -151,9 +153,10 @@
               type="primary"
               link
               @click="viewFilesByTag(row.name)"
+              :disabled="row.document_count === 0"
               :icon="View"
             >
-              查看文件
+              查看已整理
             </el-button>
             <el-button
               v-if="!row.editing"
@@ -167,6 +170,8 @@
             <el-button
               type="danger"
               link
+              :disabled="row.usage_count > 0"
+              :title="row.usage_count > 0 ? '已被资料使用，不能删除（含待整理、回收站中的资料）' : '删除未使用的标签'"
               @click="handleDeleteTag(row.id)"
               :icon="Delete"
             >
@@ -349,7 +354,7 @@ const createTagForm = ref({ name: '' })
 // 计算平均每个标签关联的文件数
 const avgFilesPerTag = computed(() => {
   if (totalTags.value === 0) return 0
-  return totalFiles.value / totalTags.value
+  return tagStats.value.reduce((sum, tag) => sum + tag.file_count, 0) / totalTags.value
 })
 
 // 根据文件数量返回标签类型（保留用于其他用途）
@@ -373,6 +378,13 @@ const tableRowClassName = ({ row, rowIndex }) => {
   return 'tag-table-row'
 }
 
+const usageDescription = tag => {
+  if (!tag.file_count) return '未使用，可删除'
+  const labels = { organized: '已整理', pending: '待整理', trashed: '回收站', missing: '文件缺失', unknown: '关联待核查' }
+  return Object.entries(tag.usage_by_status || {}).filter(([, count]) => count > 0)
+    .map(([status, count]) => `${labels[status] || status} ${count}`).join(' · ') || '已被资料使用'
+}
+
 // 加载标签统计信息
 const loadTags = async () => {
   loading.value = true
@@ -382,11 +394,11 @@ const loadTags = async () => {
     
     // 处理API响应格式（包含 tags 和 total_unique_documents）
     const tags = response?.tags || []
-    const totalUniqueDocs = response?.total_unique_documents ?? null
+    const totalUniqueDocs = response?.total_associated_documents ?? response?.total_unique_documents ?? null
     
     tagStats.value = (tags || []).map(t => ({
       ...t,
-      file_count: t.document_count || 0,
+      file_count: t.usage_count ?? t.document_count ?? 0,
       editing: false,
       editName: ''
     }))
@@ -455,9 +467,13 @@ const handleSaveTag = async (row) => {
 
 // 删除标签
 const handleDeleteTag = async (tagId) => {
+  if (tagStats.value.find(tag => tag.id === tagId)?.usage_count > 0) {
+    ElMessage.warning('该标签已被资料使用，不能删除')
+    return
+  }
   try {
     await ElMessageBox.confirm(
-      '确定要删除该标签吗？删除后该标签将从所有文件中移除。',
+      '确定删除这个未使用的标签吗？已被资料使用的标签不能删除。',
       '确认删除',
       {
         confirmButtonText: '确定',
@@ -472,6 +488,7 @@ const handleDeleteTag = async (tagId) => {
   } catch (error) {
     if (error !== 'cancel') {
       console.error('删除标签失败:', error)
+      await loadTags()
     }
   }
 }
@@ -482,10 +499,13 @@ const handleBatchDeleteTags = async () => {
     ElMessage.warning('请选择要删除的标签')
     return
   }
-  
+  if (tagStats.value.some(tag => selectedTags.value.includes(tag.id) && tag.usage_count > 0)) {
+    ElMessage.warning('选中的标签包含已使用标签，请仅选择未使用的标签删除')
+    return
+  }
   try {
     await ElMessageBox.confirm(
-      `确定要删除选中的 ${selectedTags.value.length} 个标签吗？删除后这些标签将从所有文件中移除。`,
+      `确定删除选中的 ${selectedTags.value.length} 个未使用标签吗？`,
       '确认批量删除',
       {
         confirmButtonText: '确定',
@@ -494,10 +514,11 @@ const handleBatchDeleteTags = async () => {
       }
     )
     
-    await Promise.all(selectedTags.value.map(id => deleteTag(id)))
-    ElMessage.success('批量删除成功')
-    selectedTags.value = []
-    loadTags()
+    const results = await Promise.allSettled(selectedTags.value.map(id => deleteTag(id)))
+    const failed = results.filter(result => result.status === 'rejected').length
+    if (failed) ElMessage.warning(`已删除 ${results.length - failed} 个标签，${failed} 个未删除，请查看刷新后的列表`)
+    else ElMessage.success('批量删除成功')
+    await loadTags()
   } catch (error) {
     if (error !== 'cancel') {
       console.error('批量删除标签失败:', error)
@@ -606,6 +627,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.usage-breakdown { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; white-space: normal; }
+.tag-delete-hint { color: #909399; font-size: 12px; margin: 0 0 12px; line-height: 1.6; }
 .tag-manage-page {
   width: 100%;
 }

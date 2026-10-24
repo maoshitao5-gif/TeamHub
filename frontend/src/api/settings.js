@@ -50,20 +50,7 @@ export function updatePendingPath(data) {
   return request.put('/api/settings/pending-path', data)
 }
 
-// ===== 数据库云端备份 =====
-
-export function createBackup() {
-  return request.post('/api/settings/backup/create')
-}
-
-export function listBackups() {
-  return request.get('/api/settings/backup/list')
-}
-
-export function restoreBackup(backupId, confirmed = false) {
-  return request.post('/api/settings/backup/restore', { backup_id: backupId, confirmed })
-}
-
-export function deleteBackup(backupId) {
-  return request.delete(`/api/settings/backup/${backupId}`)
-}
+export const previewStorageMigration = data => request.post('/api/settings/storage/preview', data)
+export const migrateStorage = data => request.post('/api/settings/storage/migrate', data, { timeout: 0 })
+export const getStorageMigration = () => request.get('/api/settings/storage/migration', { _silent: true })
+export const recoverStorageMigration = () => request.post('/api/settings/storage/recover', {}, { timeout: 0 })

@@ -1,0 +1,188 @@
+{
+  "backup": "/private/tmp/teamhub-cleanup-30i23gjg",
+  "removed": [
+    {
+      "path": "dev-all.js",
+      "sha256": "98acd49f891c9d0bf5f1bbb5d1ae35a7893de63770752d59943ab793a9b8e54c",
+      "bytes": 12180
+    },
+    {
+      "path": "start-dev-clean.bat",
+      "sha256": "02f3cc8b0c401ad51b3f177bd3979c91c6cc8e2f4c928a403aabaa7fa2aafbe0",
+      "bytes": 1178
+    },
+    {
+      "path": "start-dev.bat",
+      "sha256": "f2668a9906c3eb4a30fb3c039cc6a23181e60c3f75ec29a19e8c833832278d97",
+      "bytes": 950
+    },
+    {
+      "path": "start.bat",
+      "sha256": "afc035cdc8222be32a53a730a431cffe925f362f84ec987e48c60d31d55280f3",
+      "bytes": 2209
+    },
+    {
+      "path": "start.sh",
+      "sha256": "d988e88f9a989f91676550d01d90c48ea513dbefd380390e10d5efdc81254e77",
+      "bytes": 687
+    },
+    {
+      "path": "kill-ports.bat",
+      "sha256": "a764f8132b2fad933be40630b3ce0d6031deaa001a410a22e75bb18af0432a83",
+      "bytes": 442
+    },
+    {
+      "path": "启动MinIO.bat",
+      "sha256": "debbf921ec3bc6e138e04d131739e9f15a1e03dc255301d18d2d158abbc2d2e2",
+      "bytes": 1235
+    },
+    {
+      "path": "启动调试环境.bat",
+      "sha256": "0ea8ffa1761ac161a76174b43d5954adc260cfa3118f546b44dc26e68a2fd3bb",
+      "bytes": 2534
+    },
+    {
+      "path": "启动（仅本地，不含云服务）.bat",
+      "sha256": "fce5a8433b4fe4a67af09211267076c7406b077aebb4c01240739d2d2c04e111",
+      "bytes": 1371
+    },
+    {
+      "path": "curl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "python",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "TeamHub云端部署指引.md",
+      "sha256": "2b5cc83d11ff013c78da1d17e265c913ae2f2ddeaa8be595c2d605f673d518d7",
+      "bytes": 18711
+    },
+    {
+      "path": "TeamHub架构说明——本地与云端.md",
+      "sha256": "59863c2135f032bb21bcad11da9dcf90be7422bb3fca73fd20754148f6289744",
+      "bytes": 16815
+    },
+    {
+      "path": "TeamHub系统说明书.md",
+      "sha256": "d9a5a5a16d73f7088ede2388b34d267aee4f781fb263225a8a25ed58d835ab92",
+      "bytes": 37721
+    },
+    {
+      "path": "TeamHub阿里云部署详细指引.md",
+      "sha256": "19e5c1bb46ced8f6c939749c61018d0a95f1807f5987d066c121c09a38aa9b01",
+      "bytes": 14431
+    },
+    {
+      "path": "说明.md",
+      "sha256": "00ad05b9ac7d2c723c8937b76dfeeb800cbfdc9356b8c86d7c7b069a0c15bde8",
+      "bytes": 5175
+    },
+    {
+      "path": "cloud_backend/DEPLOY.md",
+      "sha256": "c181b21f401f4e40e2e660f59c8eb853185c7107a393f2a7fadbe7b782270ce4",
+      "bytes": 9910
+    },
+    {
+      "path": "cloud_backend/DEPLOY_ALIYUN.md",
+      "sha256": "82543fd1a129afc31443cb1f3469d2bf23704a26de802e49a4421e93bf4d1670",
+      "bytes": 35043
+    },
+    {
+      "path": "cloud_backend/Dockerfile",
+      "sha256": "1a233d29815fa9231ca46516a3328be7acfd0b3543d0a2890dd6ef7f92e2f629",
+      "bytes": 1022
+    },
+    {
+      "path": "cloud_backend/docker-compose.yml",
+      "sha256": "7b8573189b06ce47a3ff73be1588caa670d6a3615efcab98086296d0f2f4b9f9",
+      "bytes": 1034
+    },
+    {
+      "path": "frontend/启动说明.md",
+      "sha256": "08d8e94124144ef81821ebef467367c672c5ed7b02d1541b40f562e59bd7bfe0",
+      "bytes": 1613
+    },
+    {
+      "path": "frontend/更新说明.md",
+      "sha256": "942973af950822adc9f14e358b293caf93ebdbef97082cd9ddd69a06109bb41f",
+      "bytes": 1425
+    },
+    {
+      "path": "cloud_backend/app/api/backup.py",
+      "sha256": "b8ea5f0e917f127dd5cb683c565eb8ae1cdba162f6644bab35458c822a9db378",
+      "bytes": 6553
+    },
+    {
+      "path": "cloud_backend/app/api/devices.py",
+      "sha256": "0786de4e1d72543c459da8d1af5ef792e60de3fcaed940b43e2a67ce2a199357",
+      "bytes": 2515
+    },
+    {
+      "path": "cloud_backend/app/api/sharing.py",
+      "sha256": "5807ad91ac60064226792eace8dbda2f43d6d558a4eb9d971c604127447f0930",
+      "bytes": 9463
+    },
+    {
+      "path": "cloud_backend/app/api/storage.py",
+      "sha256": "63ed115033e8c1a053be9ff190c5cab18fd6b163781ee097a9950d4381fba41d",
+      "bytes": 4224
+    },
+    {
+      "path": "cloud_backend/app/api/sync.py",
+      "sha256": "cfd272a389fa0725c0c9170aa8ffddb482fe2156f775b9da86c91eb3b0cd0250",
+      "bytes": 8447
+    },
+    {
+      "path": "cloud_backend/app/core/oss.py",
+      "sha256": "5c27aa28890d501eacfd7d2ea8266226630a824ee7372e8b4f99aa5836216a43",
+      "bytes": 8454
+    },
+    {
+      "path": "backend/app/core/oss_client.py",
+      "sha256": "566f64b0a9b0afc4d8ee67b07103dc1cd169eb7e21cbb9952e4748ee2af3c7a7",
+      "bytes": 11481
+    },
+    {
+      "path": "backend/app/core/validators.py",
+      "sha256": "369c2aa6ec438c3a6d3559f1f678d0205b346ac7bda7f3a96547faa351e2aafb",
+      "bytes": 6537
+    },
+    {
+      "path": "frontend/src/api/oss.js",
+      "sha256": "d60824cf137a4e9373865218c03085cc3d1d7854f924b2a91a108cc07d005a3f",
+      "bytes": 710
+    },
+    {
+      "path": "frontend/src/api/cloudOss.js",
+      "sha256": "bb846f8e50d9735f8d4e26ddff23448f4931438b541f23de41fcd43d01305b81",
+      "bytes": 1358
+    },
+    {
+      "path": "frontend/src/components/ConflictResolveDialog.vue",
+      "sha256": "cac0073c43f51ae8189496102233f6a979cf3386a45272c253c116c1e8254ac1",
+      "bytes": 5326
+    }
+  ],
+  "moved": {
+    "docs/M1复核与修复记录.md": "docs/reviews/M1复核与修复记录.md",
+    "docs/MVP运维与交接.md": "docs/guides/MVP运维与交接.md",
+    "docs/TeamHub项目基石.md": "docs/product/TeamHub项目基石.md",
+    "docs/MVP系统级测试报告-2026-09-28.md": "docs/reviews/MVP系统级测试报告-2026-09-28.md",
+    "docs/M0复核与修复记录.md": "docs/reviews/M0复核与修复记录.md",
+    "docs/MVP-M0-M1-Review与整改清单.md": "docs/reviews/MVP-M0-M1-Review与整改清单.md",
+    "docs/M6复核与修复记录.md": "docs/reviews/M6复核与修复记录.md",
+    "docs/TeamHub-MVP实施蓝图.md": "docs/product/TeamHub-MVP实施蓝图.md",
+    "docs/UX优化建议.md": "docs/product/UX优化建议.md",
+    "docs/M3复核与修复记录.md": "docs/reviews/M3复核与修复记录.md",
+    "docs/MVP数据与接口契约.md": "docs/architecture/MVP数据与接口契约.md",
+    "docs/M5复核与修复记录.md": "docs/reviews/M5复核与修复记录.md",
+    "docs/M2复核与修复记录.md": "docs/reviews/M2复核与修复记录.md",
+    "docs/MVP验证记录.md": "docs/reviews/MVP验证记录.md",
+    "docs/M4复核与修复记录.md": "docs/reviews/M4复核与修复记录.md",
+    "docs/MVP本机试用启动指引.md": "docs/guides/MVP本机试用启动指引.md"
+  }
+}

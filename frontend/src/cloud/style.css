@@ -1,0 +1,61 @@
+:root { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif; color: #223249; background: #f5f7fa; --el-color-primary: #235a86; --el-color-primary-light-3: #567fa0; --el-color-primary-light-7: #bfd1df; --el-color-primary-light-9: #edf3f8; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: 30px; letter-spacing: -.8px; margin-bottom: 10px; }
+h2 { font-size: 25px; margin-bottom: 15px; }
+h3 { font-size: 16px; margin-bottom: 12px; }
+.wordmark { font-size: 24px; font-weight: 800; letter-spacing: 2px; white-space: nowrap; }
+.wordmark span { font-weight: 400; color: #71a0c0; }
+.eyebrow { font-size: 11px; letter-spacing: 1.7px; font-weight: 600; color: #6b8199; margin-bottom: 12px; }
+.muted { color: #78879a; line-height: 1.65; }
+.small { font-size: 12px; }
+.error-text { color: #a73535; background: #fff1ee; border-left: 3px solid #c46c5d; padding: 12px 16px; line-height: 1.6; }
+.full-width { width: 100%; }
+.login-screen { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: #fff; }
+.login-intro { background: #1b344a; color: #f4f7fc; padding: 68px min(9vw, 120px); display: flex; flex-direction: column; justify-content: center; }
+.login-intro .wordmark { margin-bottom: 88px; }
+.login-intro h1 { font-size: clamp(32px, 3.3vw, 52px); line-height: 1.5; font-weight: 500; margin: 18px 0 28px; }
+.login-intro p { color: #a9bdce; line-height: 1.8; }
+.intro-line { width: 54px; height: 3px; background: #a3c1d6; margin: 35px 0 24px; }
+.login-intro .small { color: #a9bdce; }
+.login-panel { width: min(390px, calc(100% - 64px)); align-self: center; justify-self: center; padding: 44px 0; }
+.login-panel .el-form { margin: 34px 0 24px; }
+.login-panel .el-form-item { margin-bottom: 24px; }
+.cloud-shell { min-height: 100vh; display: flex; }
+.cloud-sidebar { width: 246px; background: #fff; border-right: 1px solid #e1e8ef; padding: 34px 22px 24px; display: flex; flex-direction: column; flex-shrink: 0; }
+.cloud-sidebar .wordmark { margin-bottom: 40px; }
+.sidebar-label { color: #8a98a8; font-size: 11px; letter-spacing: 1px; margin-bottom: 10px; }
+.cloud-sidebar nav { display: grid; gap: 8px; margin-top: 30px; }
+.cloud-sidebar nav button { border: 0; background: transparent; color: #64778b; padding: 14px 16px; border-radius: 7px; text-align: left; cursor: pointer; }
+.cloud-sidebar nav button span { margin-right: 13px; font-size: 18px; }
+.cloud-sidebar nav button.active { color: #235a86; background: #edf3f8; font-weight: 600; }
+.sidebar-bottom { margin-top: auto; padding-top: 70px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.sidebar-bottom p { margin-bottom: 0; font-weight: 600; }
+.sidebar-bottom a { color: #235a86; padding-top: 12px; }
+.logout-button { align-self: flex-start; background: transparent; border: 0; padding: 10px 0 0; color: #76879a; cursor: pointer; }
+.cloud-content { flex: 1; min-width: 0; }
+.cloud-topbar { display: flex; align-items: center; justify-content: space-between; height: 76px; border-bottom: 1px solid #e1e8ef; padding: 0 40px; font-size: 13px; background: #fbfcfe; }
+.divider { color: #b7c4cf; margin: 0 15px; }
+.cloud-workspace { padding: 42px 40px; max-width: 1500px; margin: 0 auto; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 22px; margin-bottom: 30px; }
+.section-heading .muted { font-size: 13px; margin-bottom: 0; }
+.search-bar { display: flex; gap: 12px; margin-bottom: 24px; }
+.search-bar .el-input:first-child { flex: 2; }.search-bar .el-input { flex: 1; }
+.library-table { background: #fff; border: 1px solid #e1e8ef; border-radius: 8px; overflow: hidden; }
+.library-table .el-table { --el-table-header-bg-color: #fafbfd; --el-table-header-text-color: #77879a; }
+.library-table .el-table td { padding: 17px 12px; }.library-table .el-table th { padding: 12px; font-size: 12px; }
+.document-row { cursor: pointer; }
+.document-link { text-align: left; padding: 0; border: 0; background: none; color: #2a4058; font-weight: 600; cursor: pointer; }
+.tag { margin-right: 5px; }.table-footer { padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.document-detail h2 { overflow-wrap: anywhere; }.document-detail .detail-actions { display: flex; gap: 10px; margin: 28px 0 40px; }
+.version-row { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #e7edf2; padding: 20px 0; gap: 20px; }
+.version-row .el-tag { margin-left: 10px; }.version-row p { margin: 10px 0 6px; font-size: 13px; }
+.access-editor .muted { font-size: 12px; }.access-row { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }.access-row > span { flex: 1; overflow-wrap: anywhere; }.access-row .el-select { width: 118px; }
+fieldset { border: 1px solid #e4eaf1; padding: 18px; margin: 0 0 22px; border-radius: 6px; }legend { font-size: 13px; color: #5b6f83; padding: 0 6px; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 26px; }.scope-note { background: #edf3f8; padding: 16px; line-height: 1.7; font-size: 13px; }
+@media (max-width: 900px) { .cloud-sidebar { width: 205px; padding: 28px 16px; }.cloud-workspace { padding: 30px 22px; }.cloud-topbar { padding: 0 22px; }.search-bar { flex-wrap: wrap; }.search-bar .el-input:first-child { flex-basis: 100%; } }
+@media (max-width: 640px) { .login-screen { grid-template-columns: 1fr; }.login-intro { padding: 28px 32px; }.login-intro .wordmark { margin-bottom: 20px; }.login-intro h1 { font-size: 27px; margin: 10px 0; }.login-intro .intro-line, .login-intro > .small { display: none; }.cloud-shell { display: block; }.cloud-sidebar { width: 100%; padding: 22px; }.cloud-sidebar .wordmark { margin-bottom: 20px; }.cloud-sidebar nav { display: flex; margin-top: 16px; }.sidebar-bottom { padding-top: 20px; flex-direction: row; flex-wrap: wrap; align-items: center; }.sidebar-bottom .small { display: none; }.sidebar-bottom a, .logout-button { padding-top: 0; margin-left: auto; }.cloud-topbar { height: 55px; }.cloud-workspace { padding: 28px 16px; }.section-heading { align-items: flex-start; }.section-heading .el-button { padding: 10px; }h1 { font-size: 24px; }.section-heading .muted { max-width: 200px; }.access-row { flex-wrap: wrap; } }

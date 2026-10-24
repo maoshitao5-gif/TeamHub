@@ -1,43 +1,81 @@
 """
-文档、版本、标签 API（工作空间范围）
-CRUD /api/workspaces/{ws_id}/documents
-CRUD /api/workspaces/{ws_id}/documents/{doc_id}/versions
-CRUD /api/workspaces/{ws_id}/tags
+文档、版本、标签 API（工作空间范围）—— M1-R02 收敛后仅保留只读接口
+
+写入接口（create/update/delete 文档、push、snapshot、独立 tag 增删）已停用，
+统一由 decommissioned 桩返回 410（契约 §7 + 整改清单 M1-R02）；
+新的发布/版本提交/标签关联通路在 M4 由发布通路实现。
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 from typing import List
 
 from app.database import get_db
 from app.models import (
-    User, CloudDocument, CloudVersion, CloudTag,
-    CloudChangeLog, cloud_document_tags, _gen_uuid,
+    User, CloudDocument, CloudVersion, CloudTag, cloud_document_tags,
 )
-from app.core.deps import get_current_user, check_workspace_access, next_sequence_number
+from app.core.deps import get_current_user, check_workspace_access, get_workspace_document
 from app.schemas.document import (
-    DocumentCreate, DocumentUpdate, DocumentResponse,
-    TagCreate, TagResponse,
-    VersionResponse, DocPushRequest,
+    DocumentResponse,
+    TagResponse,
+    VersionResponse,
 )
+
+from app.services.access import (visible_document_clause, document_capabilities, batch_document_capabilities,
+                                 validate_access_entries, replace_access)
+from app.schemas.publication import AccessUpdate
+from app.models import DocumentAccess, AdminAction, ServerMetadata
+from app.api.publications import _begin_write
 
 router = APIRouter(tags=["文档"])
 
 
-def _record_change(ws_id: str, entity_type: str, entity_id: str, operation: str,
-                   payload: dict, device_id: str | None, db: Session):
-    """记录一条变更日志（在 db.commit 之前调用）"""
-    seq = next_sequence_number(ws_id, db)
-    log = CloudChangeLog(
-        workspace_id=ws_id,
-        sequence_number=seq,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        operation=operation,
-        payload=payload,
-        device_id=device_id,
-    )
-    db.add(log)
+@router.get('/api/server-info')
+def server_info(db: Session = Depends(get_db)):
+    from sqlalchemy.exc import IntegrityError
+    metadata = db.get(ServerMetadata, 1)
+    if metadata is None:
+        db.add(ServerMetadata(id=1))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+        metadata = db.get(ServerMetadata, 1)
+    return dict(server_id=metadata.server_id, protocol_major=metadata.protocol_major,
+                schema_version=metadata.schema_version,
+                capabilities=['document_acl', 'fixed_deliveries', 'explicit_publication_scope'])
+
+
+def _access_response(doc, db):
+    return dict(document_id=doc.id, visibility=doc.visibility, access_revision=doc.access_revision,
+                access=[dict(user_id=entry.user_id, role=entry.role)
+                        for entry in db.query(DocumentAccess).filter_by(document_id=doc.id)
+                        .order_by(DocumentAccess.user_id)])
+
+
+@router.get('/api/workspaces/{ws_id}/documents/{doc_id}/access')
+def get_document_access(ws_id: str, doc_id: str, current_user: User = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    doc = get_workspace_document(ws_id, doc_id, db, user_id=current_user.id, capability='manage')
+    return _access_response(doc, db)
+
+
+@router.put('/api/workspaces/{ws_id}/documents/{doc_id}/access')
+def update_document_access(ws_id: str, doc_id: str, body: AccessUpdate,
+                           current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _begin_write(db, ws_id, current_user)
+    doc = get_workspace_document(ws_id, doc_id, db, user_id=current_user.id, capability='manage')
+    if doc.access_revision != body.base_access_revision:
+        raise HTTPException(409, '资料授权已变化，请重新加载')
+    grants = validate_access_entries(body.access, ws_id, db)
+    replace_access(doc, grants, current_user.id, db)
+    doc.visibility = body.visibility
+    doc.access_revision += 1
+    db.add(AdminAction(actor_id=current_user.id, action='update_document_access',
+                       target=dict(document_id=doc.id, workspace_id=ws_id,
+                                   access_revision=doc.access_revision, visibility=doc.visibility)))
+    db.commit()
+    return _access_response(doc, db)
 
 
 # ========== 服务端搜索 ==========
@@ -47,6 +85,7 @@ async def search_documents(
     ws_id: str,
     q: str = "",
     tags: str = "",
+    tag_ids: str = "",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -61,6 +100,7 @@ async def search_documents(
 
     query = db.query(CloudDocument).filter(
         CloudDocument.workspace_id == ws_id,
+        visible_document_clause(current_user.id),
         CloudDocument.trashed_at == None,
     )
 
@@ -81,24 +121,32 @@ async def search_documents(
                 CloudDocument.tags.any(CloudTag.id == tag.id)
             )
 
+    for tag_id in dict.fromkeys(t.strip() for t in tag_ids.split(',') if t.strip()):
+        query = query.filter(CloudDocument.tags.any(CloudTag.id == tag_id))
     total = query.count()
     docs = (
         query
-        .options(selectinload(CloudDocument.tags), selectinload(CloudDocument.versions))
+        .options(selectinload(CloudDocument.tags))
         .order_by(CloudDocument.updated_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
 
+    document_ids = [doc.id for doc in docs]
+    uploader_names = dict(db.query(User.id, User.display_name).filter(
+        User.id.in_({doc.uploader_id for doc in docs if doc.uploader_id})).all()) if docs else {}
+    version_counts = dict(db.query(CloudVersion.document_id, func.count(CloudVersion.id)).filter(
+        CloudVersion.document_id.in_(document_ids)).group_by(CloudVersion.document_id).all()) if docs else {}
+    current_versions = {version.id: version for version in db.query(CloudVersion).filter(
+        CloudVersion.document_id.in_(document_ids),
+        CloudVersion.id.in_({doc.current_version_id for doc in docs if doc.current_version_id})).all()} if docs else {}
+    capabilities = batch_document_capabilities(docs, current_user.id, db)
     items = []
     for doc in docs:
-        uploader_name = None
-        if doc.uploader_id:
-            uploader = db.query(User.display_name).filter(User.id == doc.uploader_id).first()
-            if uploader:
-                uploader_name = uploader.display_name
-        current_ver = next((v for v in doc.versions if v.is_current), None)
+        current_ver = current_versions.get(doc.current_version_id)
+        if current_ver and current_ver.document_id != doc.id:
+            current_ver = None
         items.append({
             "id": doc.id,
             "name": doc.name,
@@ -109,13 +157,17 @@ async def search_documents(
             "total_size": doc.total_size,
             "server_version": doc.server_version,
             "uploader_id": doc.uploader_id,
-            "uploader_display_name": uploader_name,
+            "uploader_display_name": uploader_names.get(doc.uploader_id),
             "tags": [{"id": t.id, "name": t.name, "color": t.color} for t in doc.tags],
-            "version_count": len(doc.versions),
+            "version_count": version_counts.get(doc.id, 0),
+            "visibility": doc.visibility, "access_revision": doc.access_revision,
+            "capabilities": capabilities[doc.id],
             "current_version": {
                 "id": current_ver.id,
                 "oss_key": current_ver.oss_key,
-                "sha256_hash": current_ver.sha256_hash,
+                "sha256_hash": current_ver.content_hash,
+                "content_hash": current_ver.content_hash,
+                "manifest_hash": current_ver.manifest_hash,
                 "file_size": current_ver.file_size,
                 "original_filename": current_ver.original_filename,
             } if current_ver else None,
@@ -126,36 +178,7 @@ async def search_documents(
     return {"total": total, "items": items, "page": page, "page_size": page_size}
 
 
-# ========== 文档 CRUD ==========
-
-@router.post("/api/workspaces/{ws_id}/documents", response_model=DocumentResponse, status_code=201)
-async def create_document(
-    ws_id: str,
-    body: DocumentCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    check_workspace_access(ws_id, current_user.id, "member", db)
-
-    if db.query(CloudDocument).filter(CloudDocument.id == body.id).first():
-        raise HTTPException(status_code=409, detail="文档 ID 已存在（重复推送）")
-
-    doc = CloudDocument(
-        id=body.id,
-        workspace_id=ws_id,
-        name=body.name,
-        description=body.description,
-        is_folder=body.is_folder,
-        status=body.status,
-        file_count=body.file_count,
-        total_size=body.total_size,
-    )
-    db.add(doc)
-    _record_change(ws_id, "document", doc.id, "create", {"name": doc.name, "status": doc.status}, None, db)
-    db.commit()
-    db.refresh(doc)
-    return doc
-
+# ========== 文档读取 ==========
 
 @router.get("/api/workspaces/{ws_id}/documents", response_model=List[DocumentResponse])
 async def list_documents(
@@ -167,11 +190,22 @@ async def list_documents(
     check_workspace_access(ws_id, current_user.id, "viewer", db)
     q = db.query(CloudDocument).filter(
         CloudDocument.workspace_id == ws_id,
+        visible_document_clause(current_user.id),
         CloudDocument.trashed_at == None,
     )
     if status:
         q = q.filter(CloudDocument.status == status)
-    return q.order_by(CloudDocument.updated_at.desc()).all()
+    docs = q.options(selectinload(CloudDocument.tags), selectinload(CloudDocument.versions)).order_by(
+        CloudDocument.updated_at.desc()).all()
+    capabilities = batch_document_capabilities(docs, current_user.id, db)
+    results = []
+    for doc in docs:
+        result = DocumentResponse.model_validate(doc)
+        result.capabilities = capabilities[doc.id]
+        for version in result.versions:
+            version.is_current = version.id == doc.current_version_id
+        results.append(result)
+    return results
 
 
 @router.get("/api/workspaces/{ws_id}/documents/{doc_id}", response_model=DocumentResponse)
@@ -182,66 +216,15 @@ async def get_document(
     db: Session = Depends(get_db),
 ):
     check_workspace_access(ws_id, current_user.id, "viewer", db)
-    doc = db.query(CloudDocument).filter(
-        CloudDocument.id == doc_id, CloudDocument.workspace_id == ws_id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
-    return doc
+    doc = get_workspace_document(ws_id, doc_id, db, user_id=current_user.id)
+    result = DocumentResponse.model_validate(doc)
+    result.capabilities = document_capabilities(doc, current_user.id, db)
+    for version in result.versions:
+        version.is_current = version.id == doc.current_version_id
+    return result
 
 
-@router.put("/api/workspaces/{ws_id}/documents/{doc_id}", response_model=DocumentResponse)
-async def update_document(
-    ws_id: str,
-    doc_id: str,
-    body: DocumentUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    check_workspace_access(ws_id, current_user.id, "member", db)
-    doc = db.query(CloudDocument).filter(
-        CloudDocument.id == doc_id, CloudDocument.workspace_id == ws_id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
-
-    if body.name is not None:
-        doc.name = body.name
-    if body.description is not None:
-        doc.description = body.description
-    if body.status is not None:
-        doc.status = body.status
-    if body.file_count is not None:
-        doc.file_count = body.file_count
-    if body.total_size is not None:
-        doc.total_size = body.total_size
-    doc.server_version += 1
-
-    _record_change(ws_id, "document", doc.id, "update", {"name": doc.name, "status": doc.status}, None, db)
-    db.commit()
-    db.refresh(doc)
-    return doc
-
-
-@router.delete("/api/workspaces/{ws_id}/documents/{doc_id}", status_code=204)
-async def delete_document(
-    ws_id: str,
-    doc_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    check_workspace_access(ws_id, current_user.id, "member", db)
-    doc = db.query(CloudDocument).filter(
-        CloudDocument.id == doc_id, CloudDocument.workspace_id == ws_id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
-    _record_change(ws_id, "document", doc.id, "delete", {}, None, db)
-    db.delete(doc)
-    db.commit()
-
-
-# ========== 版本 CRUD ==========
+# ========== 版本读取 ==========
 
 @router.get("/api/workspaces/{ws_id}/documents/{doc_id}/versions", response_model=List[VersionResponse])
 async def list_versions(
@@ -251,173 +234,20 @@ async def list_versions(
     db: Session = Depends(get_db),
 ):
     check_workspace_access(ws_id, current_user.id, "viewer", db)
-    return db.query(CloudVersion).filter(CloudVersion.document_id == doc_id).order_by(
+    # M1 修复:版本查询必须限定文档归属当前工作空间,防止跨空间读取
+    doc = get_workspace_document(ws_id, doc_id, db, user_id=current_user.id)
+    versions = db.query(CloudVersion).filter(CloudVersion.document_id == doc.id).order_by(
         CloudVersion.version_number.desc()
     ).all()
+    results = []
+    for version in versions:
+        result = VersionResponse.model_validate(version)
+        result.is_current = version.id == doc.current_version_id
+        results.append(result)
+    return results
 
 
-@router.post("/api/workspaces/{ws_id}/documents/{doc_id}/versions/snapshot", status_code=201)
-async def create_version_snapshot(
-    ws_id: str,
-    doc_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    推送前保存旧版快照：将当前 is_current=True 的 CloudVersion 复制为历史记录（is_current=False）。
-    OSS 文件不复制（oss_key 不变，文件已在 OSS 中持久存储）。
-    调用方：本地后端在推送新版本前调用，确保旧版本可被追溯。
-    """
-    check_workspace_access(ws_id, current_user.id, "member", db)
-    doc = db.query(CloudDocument).filter(
-        CloudDocument.id == doc_id, CloudDocument.workspace_id == ws_id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
-
-    current_ver = db.query(CloudVersion).filter(
-        CloudVersion.document_id == doc_id,
-        CloudVersion.is_current == True,
-    ).first()
-    if not current_ver:
-        # 无历史版本可保存（首次推送），直接返回
-        return {"snapshot_created": False, "reason": "no_current_version"}
-
-    snapshot = CloudVersion(
-        id=_gen_uuid(),
-        document_id=doc_id,
-        version_number=current_ver.version_number,
-        oss_key=current_ver.oss_key,
-        sha256_hash=current_ver.sha256_hash,
-        file_size=current_ver.file_size,
-        original_filename=current_ver.original_filename,
-        is_current=False,  # 历史记录
-        created_at=current_ver.created_at,
-    )
-    db.add(snapshot)
-    db.commit()
-
-    return {"snapshot_created": True, "version_number": snapshot.version_number}
-
-
-# ========== 简化推送端点 ==========
-
-@router.post("/api/workspaces/{ws_id}/documents/{doc_id}/push", status_code=200)
-async def push_document(
-    ws_id: str,
-    doc_id: str,
-    body: DocPushRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    本地后端推送单个文档到云端（创建或更新）。
-    - 文档不存在 → 创建 CloudDocument + 第一个 CloudVersion(is_current=True)
-    - 文档已存在 → 旧 CloudVersion(is_current=True) 改为历史版本，创建新 CloudVersion
-    - 标签自动合并到工作空间标签库，并关联到文档
-    """
-    check_workspace_access(ws_id, current_user.id, "member", db)
-
-    doc = db.query(CloudDocument).filter(
-        CloudDocument.id == doc_id, CloudDocument.workspace_id == ws_id
-    ).first()
-
-    if not doc:
-        # 首次推送：创建文档
-        doc = CloudDocument(
-            id=doc_id,
-            workspace_id=ws_id,
-            name=body.name,
-            description=body.description,
-            is_folder=body.is_folder,
-            status=body.status,
-            file_count=body.file_count,
-            total_size=body.total_size,
-            uploader_id=current_user.id,
-        )
-        db.add(doc)
-        db.flush()
-        _record_change(ws_id, "document", doc.id, "create",
-                       {"name": doc.name, "status": doc.status}, body.device_id, db)
-    else:
-        # 再次推送：更新文档元数据，归档旧版本
-        doc.name = body.name
-        doc.description = body.description
-        doc.status = body.status
-        doc.file_count = body.file_count
-        doc.total_size = body.total_size
-        doc.server_version += 1
-
-        # 将旧 is_current 版本标为历史
-        db.query(CloudVersion).filter(
-            CloudVersion.document_id == doc_id,
-            CloudVersion.is_current == True,
-        ).update({"is_current": False})
-        db.flush()
-
-        _record_change(ws_id, "document", doc.id, "update",
-                       {"name": doc.name, "status": doc.status}, body.device_id, db)
-
-    # 合并标签
-    for tag_name in body.tags:
-        tag = db.query(CloudTag).filter(
-            CloudTag.workspace_id == ws_id,
-            CloudTag.name == tag_name,
-        ).first()
-        if not tag:
-            tag = CloudTag(workspace_id=ws_id, name=tag_name)
-            db.add(tag)
-            db.flush()
-        if tag not in doc.tags:
-            doc.tags.append(tag)
-
-    # 创建新版本（文件夹文档允许 oss_key 为空）
-    if body.oss_key or body.is_folder:
-        ver_count = db.query(CloudVersion).filter(
-            CloudVersion.document_id == doc_id
-        ).count()
-        new_ver = CloudVersion(
-            id=_gen_uuid(),
-            document_id=doc_id,
-            version_number=ver_count + 1,
-            oss_key=body.oss_key,
-            sha256_hash=body.sha256_hash,
-            file_size=body.file_size,
-            original_filename=body.original_filename or body.name,
-            note=body.version_note or None,
-            is_current=True,
-        )
-        db.add(new_ver)
-        _record_change(ws_id, "version", new_ver.id, "create",
-                       {"document_id": doc_id, "oss_key": body.oss_key}, body.device_id, db)
-
-    db.commit()
-    db.refresh(doc)
-    return {"ok": True, "doc_id": doc.id, "server_version": doc.server_version}
-
-
-# ========== 标签 CRUD ==========
-
-@router.post("/api/workspaces/{ws_id}/tags", response_model=TagResponse, status_code=201)
-async def create_tag(
-    ws_id: str,
-    body: TagCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    check_workspace_access(ws_id, current_user.id, "member", db)
-    if db.query(CloudTag).filter(
-        CloudTag.workspace_id == ws_id, CloudTag.name == body.name
-    ).first():
-        raise HTTPException(status_code=400, detail="标签名称已存在")
-
-    tag = CloudTag(workspace_id=ws_id, name=body.name, color=body.color)
-    db.add(tag)
-    _record_change(ws_id, "tag", tag.id, "create", {"name": tag.name}, None, db)
-    db.commit()
-    db.refresh(tag)
-    return tag
-
+# ========== 标签读取 ==========
 
 @router.get("/api/workspaces/{ws_id}/tags", response_model=List[TagResponse])
 async def list_tags(
@@ -426,22 +256,8 @@ async def list_tags(
     db: Session = Depends(get_db),
 ):
     check_workspace_access(ws_id, current_user.id, "viewer", db)
-    return db.query(CloudTag).filter(CloudTag.workspace_id == ws_id).all()
-
-
-@router.delete("/api/workspaces/{ws_id}/tags/{tag_id}", status_code=204)
-async def delete_tag(
-    ws_id: str,
-    tag_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    check_workspace_access(ws_id, current_user.id, "member", db)
-    tag = db.query(CloudTag).filter(
-        CloudTag.id == tag_id, CloudTag.workspace_id == ws_id
-    ).first()
-    if not tag:
-        raise HTTPException(status_code=404, detail="标签不存在")
-    _record_change(ws_id, "tag", tag.id, "delete", {}, None, db)
-    db.delete(tag)
-    db.commit()
+    return (db.query(CloudTag).join(cloud_document_tags, CloudTag.id == cloud_document_tags.c.tag_id)
+            .join(CloudDocument, CloudDocument.id == cloud_document_tags.c.document_id)
+            .filter(CloudTag.workspace_id == ws_id, CloudDocument.workspace_id == ws_id,
+        visible_document_clause(current_user.id),
+                    CloudDocument.trashed_at.is_(None)).distinct().order_by(CloudTag.name).all())

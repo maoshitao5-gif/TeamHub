@@ -5,7 +5,7 @@
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, BigInteger, Integer, Boolean, Table, ForeignKey, Text, Float
+from sqlalchemy import Column, String, DateTime, BigInteger, Integer, Boolean, Table, ForeignKey, Text, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
@@ -51,8 +51,17 @@ class Document(Base):
     # 是否为文件夹文档
     is_folder = Column(Boolean, default=False, nullable=False)
 
+    # 资料类型: file / folder / archive(M1 新增,由 is_folder 迁移;契约 §2.1)
+    doc_type = Column(String(10), nullable=False, default="file")
+
+    # 当前版本 ID —— 唯一事实来源(M1 新增;契约 §1,替代 is_current 的读方职责)
+    # FK 保证存在性(不存在的版本 ID 不能落库);归属校验由写入路径承担(M1-R01)
+    current_version_id = Column(String(36), ForeignKey("versions.id", ondelete="SET NULL"), nullable=True)
+    version_sequence = Column(Integer, nullable=False, default=0)
+
     # 文件库中的存储路径（相对于文件库根目录）
     storage_path = Column(String(1000), nullable=True)
+    storage_area = Column(String(10), nullable=False, default="library")
 
     # 收纳方式: move / copy / index
     storage_mode = Column(String(10), nullable=False, default="move")
@@ -114,7 +123,8 @@ class Document(Base):
     # 关系
     tags = relationship("Tag", secondary=document_tag, back_populates="documents", lazy="selectin")
     versions = relationship("Version", back_populates="document", cascade="all, delete-orphan",
-                            order_by="Version.version_number.desc()")
+                            order_by="Version.version_number.desc()",
+                            foreign_keys="Version.document_id")
 
 
 class Version(Base):
@@ -144,6 +154,9 @@ class Version(Base):
     # SHA-256 文件哈希
     sha256_hash = Column(String(64), nullable=True, index=True)
 
+    # 文件夹整体快照的归档摘要(M1 新增,契约 §1;单文件为 NULL)
+    manifest_hash = Column(String(64), nullable=True)
+
     # 文件大小（字节）
     file_size = Column(BigInteger, default=0, nullable=False)
 
@@ -170,7 +183,14 @@ class Version(Base):
     last_file_mtime = Column(Float, nullable=True)
 
     # 关系
-    document = relationship("Document", back_populates="versions")
+    document = relationship("Document", back_populates="versions",
+                            foreign_keys="Version.document_id")
+
+    # (document_id, version_number) 唯一(M1-R01,契约 §2.2):空库由 create_all 建立,
+    # 旧库由迁移在清理重复号后建立同名唯一索引
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_number", name="uq_versions_doc_num"),
+    )
 
 
 class ChangeLog(Base):
@@ -209,3 +229,86 @@ class Tag(Base):
 
     # 关系
     documents = relationship("Document", secondary=document_tag, back_populates="tags", lazy="selectin")
+
+
+class ShareLink(Base):
+    """
+    个人资料 ↔ 共享资料关联(M1 新增,契约 §2.4)
+    本地一份资料最多关联一个共享资料。
+    """
+    __tablename__ = "share_links"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    local_document_id = Column(String(36), ForeignKey('documents.id', ondelete='CASCADE'),
+                               nullable=False, unique=True, index=True)
+    server_url = Column(String(255), nullable=False)
+    server_id = Column(String(36), nullable=True, index=True)
+    account_id = Column(String(36), nullable=True)
+    workspace_id = Column(String(36), nullable=False)
+    shared_document_id = Column(String(36), nullable=False)
+    base_version_id = Column(String(36), nullable=True)
+    observed_version_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class Favorite(Base):
+    """
+    收藏(M1 新增,契约 §2.5)
+    收藏资料引用而非固定工作路径;共享目标仅存引用,不复制内容。
+    """
+    __tablename__ = "favorites"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    # local = 个人资料 / shared = 共享资料
+    target_type = Column(String(10), nullable=False)
+    local_document_id = Column(String(36), ForeignKey('documents.id', ondelete='CASCADE'),
+                               nullable=True, index=True)
+    server_url = Column(String(255), nullable=True)
+    server_id = Column(String(36), nullable=True, index=True)
+    workspace_id = Column(String(36), nullable=True)
+    shared_document_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class VersionSource(Base):
+    """Successful remote provenance; deleting a local version never erases a submit base."""
+    __tablename__ = "version_sources"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    local_document_id = Column(String(36), ForeignKey('documents.id', ondelete='CASCADE'), nullable=False, index=True)
+    # Keep the historical identifier after a version is deliberately removed.
+    local_version_id = Column(String(36), nullable=False, index=True)
+    server_id = Column(String(36), nullable=False)
+    account_id = Column(String(36), nullable=False)
+    workspace_id = Column(String(36), nullable=False)
+    source_type = Column(String(20), nullable=False)
+    shared_document_id = Column(String(36), nullable=True)
+    shared_version_id = Column(String(36), nullable=True)
+    delivery_id = Column(String(36), nullable=True)
+    item_id = Column(String(36), nullable=True)
+    operation_id = Column(String(36), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class RemoteOperation(Base):
+    """Durable request identity and recovery state, containing no credentials."""
+    __tablename__ = "remote_operations"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    server_id = Column(String(36), nullable=False)
+    account_id = Column(String(36), nullable=False)
+    workspace_id = Column(String(36), nullable=False)
+    request_id = Column(String(128), nullable=False)
+    kind = Column(String(30), nullable=False)
+    local_document_id = Column(String(36), nullable=True, index=True)
+    input_json = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default='pending', index=True)
+    result_json = Column(Text, nullable=True)
+    recovery_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    __table_args__ = (
+        UniqueConstraint('server_id', 'account_id', 'workspace_id', 'request_id', name='uq_remote_request'),
+    )

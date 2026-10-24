@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, DateTime, BigInteger, Integer, Boolean,
-    Text, ForeignKey, UniqueConstraint, JSON
+    Text, ForeignKey, UniqueConstraint, CheckConstraint, JSON
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -132,50 +132,83 @@ class Workspace(Base):
 
 class CloudDocument(Base):
     """
-    云端文档表
-    id 与桌面端 Document.id 保持相同 UUID，无需映射表
-    server_version 单调递增用于冲突检测
+    云端文档表(M1 契约 §3.1)
+    id 由服务端生成;当前版本以 current_version_id 为唯一事实来源(新代码)。
+    过渡期保留旧列(is_folder/uploader_id/server_version/is_current 等),
+    旧写入路径在 M4 由发布通路整体替换后删除。
     """
     __tablename__ = "cloud_documents"
 
-    id = Column(String(36), primary_key=True)          # 与桌面端 UUID 保持一致
+    id = Column(String(36), primary_key=True, default=_gen_uuid)   # M1:服务端生成
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
-    is_folder = Column(Boolean, default=False, nullable=False)
-    status = Column(String(20), nullable=False, default="pending")  # pending/organized/missing/trashed
+    is_folder = Column(Boolean, default=False, nullable=False)     # 废弃过渡:新代码用 doc_type
+    doc_type = Column(String(10), nullable=False, default="file")  # file / folder / archive
+    status = Column(String(20), nullable=False, default="pending")  # pending/organized/trashed(保留旧值,见契约 §6.2)
     file_count = Column(Integer, default=1, nullable=False)
     total_size = Column(BigInteger, default=0, nullable=False)
-    server_version = Column(Integer, default=1, nullable=False)     # 冲突检测游标
-    uploader_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # 推送者
+    server_version = Column(Integer, default=1, nullable=False)     # 废弃过渡:冲突检测改用基准版本 ID
+    current_version_id = Column(String(36), nullable=True)          # M1 新增:唯一当前版本来源
+    uploader_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # 废弃过渡:用 created_by
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)   # M1 新增:发布者记录
     created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False)
     trashed_at = Column(DateTime(timezone=True), nullable=True)
+    trashed_by = Column(String(36), ForeignKey("users.id"), nullable=True)  # M1 新增:管理员操作留痕
+    visibility = Column(String(20), nullable=False, default="workspace", server_default="workspace")
+    access_revision = Column(Integer, nullable=False, default=1, server_default="1")
 
     workspace = relationship("Workspace", back_populates="documents")
     uploader = relationship("User", foreign_keys=[uploader_id])
     versions = relationship("CloudVersion", back_populates="document", cascade="all, delete-orphan",
                             order_by="CloudVersion.version_number.desc()")
     tags = relationship("CloudTag", secondary="cloud_document_tags", back_populates="documents")
+    access_entries = relationship("DocumentAccess", cascade="all, delete-orphan")
+
+    __table_args__ = (CheckConstraint("visibility IN ('workspace', 'restricted')", name="ck_document_visibility"),)
+
+
+class DocumentAccess(Base):
+    __tablename__ = "document_access"
+    document_id = Column(String(36), ForeignKey("cloud_documents.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), primary_key=True)
+    role = Column(String(20), nullable=False, default="reader")
+    granted_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    __table_args__ = (CheckConstraint("role IN ('reader', 'contributor', 'manager')", name="ck_document_access_role"),)
 
 
 class CloudVersion(Base):
-    """云端版本表"""
+    """
+    云端版本表(M1 契约 §3.2)
+    (document_id, version_number) 唯一;content_hash 不设唯一约束。
+    过渡期保留旧列(sha256_hash/oss_key/is_current/relative_path)。
+    """
     __tablename__ = "cloud_versions"
 
-    id = Column(String(36), primary_key=True)              # 与桌面端 UUID 保持一致
+    id = Column(String(36), primary_key=True, default=_gen_uuid)   # M1:服务端生成
     document_id = Column(String(36), ForeignKey("cloud_documents.id", ondelete="CASCADE"), nullable=False, index=True)
     version_number = Column(Integer, nullable=False)
-    sha256_hash = Column(String(64), nullable=True, index=True)
-    oss_key = Column(String(1000), nullable=True)          # 文件在 OSS 中的 key
+    sha256_hash = Column(String(64), nullable=True, index=True)    # 废弃过渡:新代码用 content_hash
+    content_hash = Column(String(64), nullable=True, index=True)   # M1 新增:内容摘要
+    manifest_hash = Column(String(64), nullable=True)              # M1 新增:文件夹归档摘要
+    oss_key = Column(String(1000), nullable=True)                  # 废弃过渡:新代码用 storage_key
+    storage_key = Column(String(1000), nullable=True)              # M1 新增:不可变存储键
     file_size = Column(BigInteger, default=0, nullable=False)
     original_filename = Column(String(255), nullable=False)
-    relative_path = Column(String(500), nullable=True)     # 文件夹文档专用
+    relative_path = Column(String(500), nullable=True)             # 废弃:文件夹为整体快照
     note = Column(Text, nullable=True)
-    is_current = Column(Boolean, default=True, nullable=False)
+    is_current = Column(Boolean, default=True, nullable=False)     # 废弃过渡:读方用 documents.current_version_id
+    author_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)      # M1 新增:提交者
+    base_version_id = Column(String(36), nullable=True)            # M1 新增:提交时声明的基准版本
     created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     document = relationship("CloudDocument", back_populates="versions")
+
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_number", name="uq_cloud_version_doc_num"),
+    )
 
 
 # ========== 标签 ==========
@@ -187,6 +220,9 @@ cloud_document_tags = Table(
     Base.metadata,
     Column("document_id", String(36), ForeignKey("cloud_documents.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", String(36), ForeignKey("cloud_tags.id", ondelete="CASCADE"), primary_key=True),
+    # M1 新增(契约 §3.3):贡献者记录,按关联行判断"本人贡献"
+    Column("added_by", String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=True),
 )
 
 
@@ -253,6 +289,47 @@ class CloudChangeLog(Base):
 
 # ========== 本地数据库备份 ==========
 
+
+class PublicationRequest(Base):
+    """
+    发布请求(M1 新增,契约 §3.4)
+    (actor_id, workspace_id, request_id) 唯一,实现幂等发布/版本提交。
+    """
+    __tablename__ = "publication_requests"
+
+    id = Column(String(36), primary_key=True, default=_gen_uuid)
+    request_id = Column(String(36), nullable=False)          # 客户端幂等键
+    actor_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    request_hash = Column(String(64), nullable=False)        # 请求内容摘要,防幂等键被换负载
+    action = Column(String(20), nullable=False)              # publish / submit_version
+    status = Column(String(20), nullable=False, default="pending")  # pending / succeeded / failed
+    result_document_id = Column(String(36), nullable=True)
+    result_version_id = Column(String(36), nullable=True)
+    error_code = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("actor_id", "workspace_id", "request_id", name="uq_pubreq_actor_ws_req"),
+    )
+
+
+class AdminAction(Base):
+    """
+    管理操作记录(M1 新增,契约 §3.5)
+    不含令牌与文件正文。
+    """
+    __tablename__ = "admin_actions"
+
+    id = Column(String(36), primary_key=True, default=_gen_uuid)
+    actor_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String(30), nullable=False)   # trash / restore / purge / deactivate_user / remove_tag_link
+    target = Column(JSON, nullable=True)          # 目标描述(资料/版本/关联 ID)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
 class UserBackup(Base):
     """
     用户本地数据库备份记录
@@ -271,3 +348,61 @@ class UserBackup(Base):
     confirmed   = Column(Boolean, nullable=False, default=False)   # OSS 上传是否已确认
 
     user = relationship("User", backref="backups")
+
+
+class ServerMetadata(Base):
+    """Stable service identity, carried with backups of the same service."""
+    __tablename__ = "server_metadata"
+    id = Column(Integer, primary_key=True, default=1)
+    server_id = Column(String(36), nullable=False, unique=True, default=_gen_uuid)
+    protocol_major = Column(Integer, nullable=False, default=1)
+    schema_version = Column(String(20), nullable=False, default="005")
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    __table_args__ = (CheckConstraint("id = 1", name="ck_server_metadata_singleton"),)
+
+
+class Delivery(Base):
+    __tablename__ = "deliveries"
+    id = Column(String(36), primary_key=True, default=_gen_uuid)
+    team_id = Column(String(36), ForeignKey("teams.id", ondelete="RESTRICT"), nullable=False, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
+    sender_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    request_id = Column(String(128), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    note = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="sent")
+    sent_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    recalled_at = Column(DateTime(timezone=True), nullable=True)
+    items = relationship("DeliveryItem", back_populates="delivery", cascade="all, delete-orphan")
+    recipients = relationship("DeliveryRecipient", back_populates="delivery", cascade="all, delete-orphan")
+    __table_args__ = (
+        UniqueConstraint("sender_id", "workspace_id", "request_id", name="uq_delivery_sender_ws_request"),
+        CheckConstraint("status IN ('sent', 'recalled')", name="ck_delivery_status"),
+    )
+
+
+class DeliveryRecipient(Base):
+    __tablename__ = "delivery_recipients"
+    delivery_id = Column(String(36), ForeignKey("deliveries.id", ondelete="CASCADE"), primary_key=True)
+    recipient_id = Column(String(36), ForeignKey("users.id", ondelete="RESTRICT"), primary_key=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    delivery = relationship("Delivery", back_populates="recipients")
+
+
+class DeliveryItem(Base):
+    """Independent immutable content reference; source IDs are provenance, not ownership."""
+    __tablename__ = "delivery_items"
+    id = Column(String(36), primary_key=True, default=_gen_uuid)
+    delivery_id = Column(String(36), ForeignKey("deliveries.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    doc_type = Column(String(10), nullable=False, default="file")
+    storage_key = Column(String(1000), nullable=False)
+    content_hash = Column(String(64), nullable=False, index=True)
+    manifest_hash = Column(String(64), nullable=True)
+    file_size = Column(BigInteger, nullable=False)
+    file_count = Column(Integer, nullable=False, default=1)
+    total_size = Column(BigInteger, nullable=False, default=0)
+    source_document_id = Column(String(36), nullable=True)
+    source_version_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    delivery = relationship("Delivery", back_populates="items")

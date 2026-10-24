@@ -1,13 +1,13 @@
 <template>
   <div class="team-page">
     <div class="page-header">
-      <h2>团队管理</h2>
-      <el-button type="primary" :icon="Plus" @click="showCreateTeam = true">创建团队</el-button>
+      <div><h2>组织与资料库管理</h2><p class="management-help">管理组织成员与资料库。日常查看资料，请前往云仓库。</p></div>
+      <el-button v-if="authStore.isLoggedIn" type="primary" :icon="Plus" @click="showCreateTeam = true">创建组织</el-button>
     </div>
 
     <!-- 未登录提示 -->
     <el-card v-if="!authStore.isLoggedIn" class="not-login-card">
-      <el-empty description="请先登录云服务账号以使用团队功能">
+      <el-empty description="请先登录云服务账号以使用组织管理">
         <el-button type="primary" @click="$router.push('/login')">前往登录</el-button>
       </el-empty>
     </el-card>
@@ -28,18 +28,18 @@
       </el-card>
 
       <!-- 团队列表 -->
-      <div v-if="authStore.teams.length === 0" class="empty-teams">
-        <el-empty description="您还没有加入任何团队">
-          <el-button type="primary" @click="showCreateTeam = true">创建第一个团队</el-button>
+      <div v-if="managedTeams.length === 0" class="empty-teams">
+        <el-empty description="暂无可管理的组织，请联系管理员加入组织">
+          <el-button type="primary" @click="showCreateTeam = true">创建组织</el-button>
         </el-empty>
       </div>
 
       <div v-else class="teams-grid">
         <el-card
-          v-for="team in authStore.teams"
+          v-for="team in managedTeams"
           :key="team.id"
           class="team-card"
-          :class="{ 'is-current': authStore.currentTeam?.id === team.id }"
+          :class="{ 'is-current': managedTeam?.id === team.id }"
           @click="selectTeam(team)"
         >
           <div class="team-card-header">
@@ -58,10 +58,10 @@
       </div>
 
       <!-- 当前团队详情 -->
-      <template v-if="authStore.currentTeam">
+      <template v-if="managedTeam">
         <div class="section-title">
-          <h3>{{ authStore.currentTeam.name }} — 成员</h3>
-          <el-button size="small" :icon="Plus" @click="showInvite = true">邀请成员</el-button>
+          <h3>{{ managedTeam.name }} — 成员</h3>
+          <el-button v-if="canManageOrganization" size="small" :icon="Plus" @click="showInvite = true">邀请成员</el-button>
         </div>
 
         <el-table :data="members" v-loading="loadingMembers">
@@ -78,7 +78,7 @@
           <el-table-column label="操作" width="80" align="center">
             <template #default="{ row }">
               <el-button
-                v-if="row.user_id !== authStore.user?.id && row.role !== 'owner'"
+                v-if="canManageOrganization && row.user_id !== authStore.user?.id && row.role !== 'owner'"
                 size="small" text type="danger"
                 @click="removeMember(row)"
               >移除</el-button>
@@ -88,31 +88,28 @@
 
         <!-- 工作空间列表 -->
         <div class="section-title" style="margin-top: 24px">
-          <h3>工作空间</h3>
-          <el-button size="small" :icon="Plus" @click="showCreateWs = true">新建工作空间</el-button>
+          <h3>共享资料库</h3>
+          <el-button v-if="canManageOrganization" size="small" :icon="Plus" @click="showCreateWs = true">新建资料库</el-button>
         </div>
 
         <div class="workspaces-list">
           <div
-            v-for="ws in authStore.workspaces"
+            v-for="ws in managedWorkspaces"
             :key="ws.id"
             class="ws-item"
-            :class="{ 'is-current': authStore.currentWorkspace?.id === ws.id }"
-            @click="authStore.switchWorkspace(ws)"
           >
             <el-icon><FolderOpened /></el-icon>
             <span>{{ ws.name }}</span>
-            <el-tag v-if="authStore.currentWorkspace?.id === ws.id" size="small" type="success">当前</el-tag>
           </div>
         </div>
       </template>
     </template>
 
-    <!-- 创建团队弹窗 -->
-    <el-dialog v-model="showCreateTeam" title="创建团队" width="400px">
+    <!-- 创建组织弹窗 -->
+    <el-dialog v-model="showCreateTeam" title="创建组织" width="400px">
       <el-form :model="createTeamForm" label-width="80px">
-        <el-form-item label="团队名称">
-          <el-input v-model="createTeamForm.name" placeholder="我的团队" />
+        <el-form-item label="组织名称">
+          <el-input v-model="createTeamForm.name" placeholder="我的组织" />
         </el-form-item>
         <el-form-item label="标识符">
           <el-input v-model="createTeamForm.slug" placeholder="my-team（小写字母和连字符）" />
@@ -145,10 +142,10 @@
     </el-dialog>
 
     <!-- 创建工作空间弹窗 -->
-    <el-dialog v-model="showCreateWs" title="新建工作空间" width="400px">
+    <el-dialog v-model="showCreateWs" title="新建资料库" width="400px">
       <el-form :model="createWsForm" label-width="80px">
         <el-form-item label="名称">
-          <el-input v-model="createWsForm.name" placeholder="工作空间名称" />
+          <el-input v-model="createWsForm.name" placeholder="资料库名称" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="createWsForm.description" type="textarea" rows="2" placeholder="可选" />
@@ -163,15 +160,22 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, FolderOpened } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { teamApi, workspaceApi } from '@/api/cloud'
+import { useAppStore } from '@/stores/app'
+import { createTeam, createWorkspace, listTeamMembers, listTeams, listTeamWorkspaces, inviteMember, removeMember as removeTeamMember } from '@/api/sync'
 
 const authStore = useAuthStore()
+const appStore = useAppStore()
 
+const managedTeams = ref([])
+const managedTeamId = ref('')
+const managedTeam = computed(() => managedTeams.value.find(team => team.id === managedTeamId.value) || null)
+const managedWorkspaces = ref([])
 const members = ref([])
+const canManageOrganization = computed(() => ['owner', 'admin'].includes(members.value.find(member => member.user_id === authStore.user?.id)?.role))
 const loadingMembers = ref(false)
 const showCreateTeam = ref(false)
 const showInvite = ref(false)
@@ -184,81 +188,155 @@ const createTeamForm = ref({ name: '', slug: '' })
 const inviteForm = ref({ email: '', role: 'member' })
 const createWsForm = ref({ name: '', description: '' })
 
-async function selectTeam(team) {
-  await authStore.switchTeam(team)
-  await loadMembers()
+let active = true
+let scopeGeneration = 0
+const cloudUrl = () => JSON.stringify([appStore.settings.cloud_api_url || '', authStore.serverId, appStore.libraryPath])
+const captureScope = () => ({ generation: scopeGeneration, actorId: authStore.user?.id, cloudUrl: cloudUrl() })
+const isCurrent = scope => active && authStore.isLoggedIn && scope.actorId &&
+  scope.generation === scopeGeneration && scope.actorId === authStore.user?.id && scope.cloudUrl === cloudUrl()
+
+watch([() => authStore.user?.id, () => authStore.isLoggedIn, cloudUrl], () => {
+  scopeGeneration++
+  showCreateTeam.value = false; showInvite.value = false; showCreateWs.value = false
+  creating.value = false; inviting.value = false; creatingWs.value = false
+  createTeamForm.value = { name: '', slug: '' }
+  inviteForm.value = { email: '', role: 'member' }
+  createWsForm.value = { name: '', description: '' }
+  managedTeams.value = []; managedTeamId.value = ''; managedWorkspaces.value = []; members.value = []
+}, { flush: 'sync' })
+
+function selectTeam(team) {
+  managedTeamId.value = team.id
+}
+watch(managedTeamId, () => {
+  showInvite.value = false; showCreateWs.value = false
+  inviting.value = false; creatingWs.value = false
+  inviteForm.value = { email: '', role: 'member' }
+  createWsForm.value = { name: '', description: '' }
+}, { flush: 'sync' })
+
+let teamsRequest = 0
+async function loadManagedTeams() {
+  const requestId = ++teamsRequest, scope = captureScope()
+  if (!isCurrent(scope)) return
+  try {
+    const response = await listTeams()
+    if (!isCurrent(scope) || requestId !== teamsRequest) return
+    managedTeams.value = response
+    if (!response.some(team => team.id === managedTeamId.value)) managedTeamId.value = response[0]?.id || ''
+  } catch { /* 拦截器显示错误；此页不会改变云仓库的选择。 */ }
 }
 
+let membersRequest = 0
 async function loadMembers() {
-  if (!authStore.currentTeam) return
+  const requestId = ++membersRequest
+  const teamId = managedTeam.value?.id
+  const scope = captureScope()
+  members.value = []; managedWorkspaces.value = []
+  if (!teamId || !isCurrent(scope)) {
+    loadingMembers.value = false
+    return
+  }
   loadingMembers.value = true
   try {
-    members.value = await teamApi.listMembers(authStore.currentTeam.id)
+    const [response, workspaces] = await Promise.all([listTeamMembers(teamId), listTeamWorkspaces(teamId)])
+    if (requestId === membersRequest && isCurrent(scope) && managedTeam.value?.id === teamId) {
+      members.value = response
+      managedWorkspaces.value = workspaces
+    }
+  } catch {
+    // 请求拦截器已显示错误，保留空列表以免误操作旧团队成员。
   } finally {
-    loadingMembers.value = false
+    if (requestId === membersRequest) loadingMembers.value = false
   }
 }
 
 async function doCreateTeam() {
+  const scope = captureScope()
+  if (creating.value || !isCurrent(scope)) return
   if (!createTeamForm.value.name || !createTeamForm.value.slug) {
-    ElMessage.warning('请填写团队名称和标识符')
+    ElMessage.warning('请填写组织名称和标识符')
     return
   }
   creating.value = true
   try {
-    await teamApi.create(createTeamForm.value)
-    ElMessage.success('团队创建成功')
+    const team = await createTeam(createTeamForm.value)
+    if (!isCurrent(scope)) return
+    ElMessage.success('组织创建成功')
     showCreateTeam.value = false
     createTeamForm.value = { name: '', slug: '' }
-    await authStore.restoreSession()  // 重新加载团队列表
+    await Promise.all([loadManagedTeams(), authStore.refreshWorkspaces({ autoSelect: false })])
+    if (!isCurrent(scope)) return
+    managedTeamId.value = team.id
+  } catch { /* 请求错误已由拦截器显示。 */
   } finally {
-    creating.value = false
+    if (isCurrent(scope)) creating.value = false
   }
 }
 
 async function doInvite() {
+  const scope = captureScope()
+  const teamId = managedTeam.value?.id
+  if (inviting.value || !teamId || !isCurrent(scope)) return
   if (!inviteForm.value.email) {
     ElMessage.warning('请输入成员邮箱')
     return
   }
   inviting.value = true
   try {
-    await teamApi.inviteMember(authStore.currentTeam.id, inviteForm.value)
+    await inviteMember(teamId, inviteForm.value)
+    if (!isCurrent(scope) || managedTeam.value?.id !== teamId) return
     ElMessage.success('邀请成功')
     showInvite.value = false
     inviteForm.value = { email: '', role: 'member' }
-    await loadMembers()
+    await Promise.all([loadMembers(), authStore.refreshWorkspaces({ autoSelect: false })])
+  } catch { /* 请求错误已由拦截器显示。 */
   } finally {
-    inviting.value = false
+    if (isCurrent(scope) && managedTeam.value?.id === teamId) inviting.value = false
   }
 }
 
 async function doCreateWs() {
+  const scope = captureScope()
+  const team = managedTeam.value
+  if (creatingWs.value || !team || !isCurrent(scope)) return
   if (!createWsForm.value.name) {
-    ElMessage.warning('请输入工作空间名称')
+    ElMessage.warning('请输入资料库名称')
     return
   }
   creatingWs.value = true
   try {
-    await workspaceApi.create(authStore.currentTeam.id, createWsForm.value)
-    ElMessage.success('工作空间创建成功')
+    await createWorkspace(team.id, createWsForm.value)
+    if (!isCurrent(scope) || managedTeam.value?.id !== team.id) return
+    ElMessage.success('资料库创建成功')
     showCreateWs.value = false
     createWsForm.value = { name: '', description: '' }
-    await authStore.switchTeam(authStore.currentTeam)  // 刷新工作空间列表
+    await Promise.all([loadMembers(), authStore.refreshWorkspaces({ autoSelect: false })])
+  } catch { /* 请求错误已由拦截器显示。 */
   } finally {
-    creatingWs.value = false
+    if (isCurrent(scope) && managedTeam.value?.id === team.id) creatingWs.value = false
   }
 }
 
 async function removeMember(member) {
-  await ElMessageBox.confirm(`确认移除成员 ${member.display_name}？`, '移除成员', { type: 'warning' })
-  await teamApi.removeMember(authStore.currentTeam.id, member.user_id)
-  ElMessage.success('已移除成员')
-  await loadMembers()
+  const scope = captureScope()
+  const teamId = managedTeam.value?.id
+  if (!teamId || !isCurrent(scope)) return
+  try {
+    await ElMessageBox.confirm(`确认移除成员 ${member.display_name}？`, '移除成员', { type: 'warning' })
+    if (!isCurrent(scope) || managedTeam.value?.id !== teamId) return
+    await removeTeamMember(teamId, member.user_id)
+    if (!isCurrent(scope) || managedTeam.value?.id !== teamId) return
+    ElMessage.success('已移除成员')
+    await loadMembers()
+  } catch { /* 取消确认时无需提示，请求错误已由拦截器显示。 */ }
 }
 
 async function handleLogout() {
-  await authStore.logout()
+  if (!await authStore.logout()) {
+    ElMessage.error(authStore.workspaceError || '退出失败，请重试')
+    return
+  }
   ElMessage.success('已退出登录')
 }
 
@@ -282,18 +360,13 @@ function formatDate(str) {
   return str ? new Date(str).toLocaleDateString('zh-CN') : ''
 }
 
-onMounted(async () => {
-  if (authStore.isLoggedIn && authStore.currentTeam) {
-    await loadMembers()
-  }
-})
-
-watch(() => authStore.currentTeam, async (team) => {
-  if (team) await loadMembers()
-})
+watch([() => managedTeam.value?.id, () => authStore.user?.id, () => authStore.isLoggedIn, cloudUrl], loadMembers, { immediate: true })
+watch([() => authStore.user?.id, () => authStore.isLoggedIn, cloudUrl], loadManagedTeams, { immediate: true })
+onBeforeUnmount(() => { active = false; membersRequest++; teamsRequest++; scopeGeneration++ })
 </script>
 
 <style scoped>
+.management-help { color: #68788a; font-size: 13px; margin: 8px 0 0; }
 .team-page { max-width: 900px; }
 
 .page-header {
@@ -361,7 +434,6 @@ watch(() => authStore.currentTeam, async (team) => {
   gap: 10px;
   padding: 10px 16px;
   border-radius: 8px;
-  cursor: pointer;
   transition: all 0.2s;
   border: 1px solid #e8eaed;
   background: #fff;

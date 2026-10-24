@@ -3,8 +3,8 @@
 包含标签的 CRUD、合并等操作
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, lazyload
+from sqlalchemy import case, func, exists
 
 from backend.app.database import get_db
 from backend.app.models import Tag, Document, document_tag
@@ -16,17 +16,28 @@ logger = get_logger("api.tags")
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
 
-def _tag_with_count(tag: Tag, db: Session) -> TagResponse:
-    """构建带文档数量的标签响应"""
-    # 只统计状态为 organized 的文档，与文档库页面保持一致（文档库页面只显示 organized 状态的文档）
-    count = db.query(func.count(Document.id)).select_from(document_tag).join(
+def _usage_counts(db: Session, tag_ids) -> dict:
+    """一次聚合所有目标标签的各状态关联数，避免逐标签查询。"""
+    if not tag_ids:
+        return {}
+    # 文档库筛选继续使用 document_count；管理页与删除保护使用全部关联。
+    rows = db.query(document_tag.c.tag_id, Document.status, func.count()).select_from(document_tag).outerjoin(
         Document, Document.id == document_tag.c.document_id
-    ).filter(
-        document_tag.c.tag_id == tag.id,
-        Document.status == "organized"
-    ).scalar() or 0
-    
-    return TagResponse(id=tag.id, name=tag.name, color=tag.color, document_count=count)
+    ).filter(document_tag.c.tag_id.in_(tag_ids)).group_by(document_tag.c.tag_id, Document.status).all()
+    counts = {}
+    for tag_id, status, count in rows:
+        counts.setdefault(tag_id, {})[status or 'unknown'] = count
+    return counts
+
+
+def _tag_response(tag: Tag, counts: dict) -> TagResponse:
+    return TagResponse(id=tag.id, name=tag.name, color=tag.color,
+                       document_count=counts.get('organized', 0),
+                       usage_count=sum(counts.values()), usage_by_status=counts)
+
+
+def _tag_with_count(tag: Tag, db: Session) -> TagResponse:
+    return _tag_response(tag, _usage_counts(db, [tag.id]).get(tag.id, {}))
 
 
 @router.get("")
@@ -36,23 +47,26 @@ def list_tags(db: Session = Depends(get_db), include_stats: bool = False):
     Args:
         include_stats: 如果为 True，返回包含总唯一文档数的对象格式；否则返回标签数组（默认）
     """
-    tags = db.query(Tag).order_by(Tag.name).all()
-    tag_responses = [_tag_with_count(t, db) for t in tags]
+    tags = db.query(Tag).options(lazyload(Tag.documents)).order_by(Tag.name).all()
+    counts = _usage_counts(db, [tag.id for tag in tags])
+    tag_responses = [_tag_response(tag, counts.get(tag.id, {})) for tag in tags]
     
     # 如果请求包含统计信息，计算总唯一文档数
     if include_stats:
         # 计算总唯一文档数（所有标签关联的唯一文档数，不重复计算）
         # 只统计状态为 organized 的文档，与文档库页面保持一致（文档库页面只显示 organized 状态的文档）
-        unique_doc_count = db.query(func.count(func.distinct(Document.id))).select_from(document_tag).join(
+        unique_doc_count, associated_doc_count = db.query(
+            func.count(func.distinct(case((Document.status == 'organized', Document.id)))),
+            func.count(func.distinct(document_tag.c.document_id)),
+        ).select_from(document_tag).outerjoin(
             Document, Document.id == document_tag.c.document_id
-        ).filter(
-            Document.status == "organized"
-        ).scalar() or 0
+        ).one()
         
         # 返回包含标签列表和总唯一文档数的响应
         return {
             "tags": tag_responses,
-            "total_unique_documents": unique_doc_count
+            "total_unique_documents": unique_doc_count,
+            "total_associated_documents": associated_doc_count,
         }
     
     # 默认返回标签数组（向后兼容）
@@ -68,6 +82,7 @@ def create_tag(req: TagCreate, db: Session = Depends(get_db)):
 
     tag = Tag(name=req.name, color=req.color)
     db.add(tag)
+    db.flush()  # UUID 在 INSERT 时生成，日志必须引用已经分配的标签 ID。
     record_change(db, "tag", tag.id, "create", {"name": req.name})
     db.commit()
     db.refresh(tag)
@@ -107,7 +122,7 @@ def related_tags(
     """查询与已选标签共同出现的其他标签，用于渐进式标签筛选"""
     if not selected.strip():
         return []
-    id_list = [i.strip() for i in selected.split(",") if i.strip()]
+    id_list = list(dict.fromkeys(i.strip() for i in selected.split(",") if i.strip()))
     if not id_list:
         return []
     count = len(id_list)
@@ -175,15 +190,20 @@ def update_tag(tag_id: str, req: TagUpdate, db: Session = Depends(get_db)):
 
 @router.delete("/{tag_id}")
 def delete_tag(tag_id: str, db: Session = Depends(get_db)):
-    """删除标签"""
+    """只允许删除无任何资料关联的标签，包含待整理、缺失及回收站资料。"""
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if not tag:
         raise HTTPException(404, "标签不存在")
 
-    record_change(db, "tag", tag.id, "delete", {"name": tag.name})
-    db.delete(tag)
+    name = tag.name
+    # 在同一条 DELETE 中检查关联，避免检查后被使用的标签被级联删除。
+    used = exists().where(document_tag.c.tag_id == Tag.id)
+    deleted = db.query(Tag).filter(Tag.id == tag_id, ~used).delete(synchronize_session=False)
+    if not deleted:
+        raise HTTPException(409, "该标签已被资料使用，不能删除；请先解除所有资料的标签关联（含待整理和回收站资料）")
+    record_change(db, "tag", tag_id, "delete", {"name": name})
     db.commit()
-    return {"message": f"标签 '{tag.name}' 已删除"}
+    return {"message": f"标签 '{name}' 已删除"}
 
 
 @router.post("/merge")
